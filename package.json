@@ -1,0 +1,11 @@
+{
+  "name": "music-it",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bash ./scripts/dev.sh",
+    "dev:web": "pnpm --filter @music-it/web dev",
+    "test:web": "pnpm --filter @music-it/web test"
+  }
+}
