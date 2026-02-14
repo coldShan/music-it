@@ -1,3 +1,12 @@
+export type InstrumentId =
+  | 'piano'
+  | 'guitar'
+  | 'musicBox'
+  | 'violin'
+  | 'trumpet'
+  | 'saxophone'
+  | 'flute'
+
 export type RecognizedNote = {
   pitch: string
   midi: number
@@ -44,6 +53,8 @@ export type CatalogEntrySummary = {
   createdAt: string
   updatedAt: string
   imageHash: string
+  melodyInstrument: InstrumentId
+  leftHandInstrument: InstrumentId
 }
 
 export type CatalogEntryDetail = CatalogEntrySummary & {
@@ -53,5 +64,7 @@ export type CatalogEntryDetail = CatalogEntrySummary & {
 export type RecognizeApiResponse = RecognizeResponse & {
   catalogEntryId: string
   catalogTitle: string
+  melodyInstrument: InstrumentId
+  leftHandInstrument: InstrumentId
   isReused: boolean
 }

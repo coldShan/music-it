@@ -2,15 +2,16 @@ import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const playerMocks = vi.hoisted(() => ({
-  playScore: vi.fn().mockResolvedValue(undefined),
+  playScore: vi.fn().mockResolvedValue([]),
   stopScore: vi.fn(),
+  filterPlaybackEvents: vi.fn((events) => events),
 }))
 
 const apiMocks = vi.hoisted(() => ({
   recognizeScore: vi.fn(),
   listCatalogEntries: vi.fn(),
   getCatalogEntry: vi.fn(),
-  renameCatalogEntry: vi.fn(),
+  updateCatalogEntry: vi.fn(),
   deleteCatalogEntry: vi.fn(),
   resetCatalog: vi.fn(),
 }))
@@ -29,7 +30,7 @@ describe('App', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     apiMocks.listCatalogEntries.mockResolvedValue([])
-    apiMocks.renameCatalogEntry.mockResolvedValue({})
+    apiMocks.updateCatalogEntry.mockResolvedValue({})
     apiMocks.deleteCatalogEntry.mockResolvedValue(undefined)
     apiMocks.resetCatalog.mockResolvedValue({ reset: true, removedEntries: 0 })
   })
@@ -66,6 +67,8 @@ describe('App', () => {
       meta: { engine: 'audiveris', inputType: 'png', warnings: [] },
       catalogEntryId: 'entry-1',
       catalogTitle: 'score',
+      melodyInstrument: 'piano',
+      leftHandInstrument: 'piano',
       isReused: false,
     })
 
@@ -86,7 +89,7 @@ describe('App', () => {
     await flush()
 
     expect(wrapper.text()).toContain('G4')
-    expect(apiMocks.renameCatalogEntry).toHaveBeenCalledWith('entry-1', '我的遇见')
+    expect(apiMocks.updateCatalogEntry).toHaveBeenCalledWith('entry-1', { title: '我的遇见' })
     const playButton = wrapper.findAll('button').find((button) => button.text() === '播放')
     if (!playButton) {
       throw new Error('play button not found')
@@ -113,6 +116,8 @@ describe('App', () => {
         createdAt: '2026-02-14T12:00:00+00:00',
         updatedAt: '2026-02-14T12:00:00+00:00',
         imageHash: 'entry-2',
+        melodyInstrument: 'piano',
+        leftHandInstrument: 'piano',
       },
     ])
     apiMocks.getCatalogEntry.mockResolvedValue({
@@ -126,6 +131,8 @@ describe('App', () => {
       createdAt: '2026-02-14T12:00:00+00:00',
       updatedAt: '2026-02-14T12:00:00+00:00',
       imageHash: 'entry-2',
+      melodyInstrument: 'piano',
+      leftHandInstrument: 'piano',
       result: {
         tempo: 88,
         timeSignature: '4/4',
@@ -181,6 +188,13 @@ describe('App', () => {
         mode: 'left',
       }),
     )
+
+    await wrapper.get('#melody-instrument').setValue('violin')
+    await flush()
+    expect(apiMocks.updateCatalogEntry).toHaveBeenCalledWith('entry-2', {
+      melodyInstrument: 'violin',
+      leftHandInstrument: 'piano',
+    })
   })
 
   it('resets catalog and clears current result', async () => {
@@ -197,6 +211,8 @@ describe('App', () => {
         createdAt: '2026-02-14T12:00:00+00:00',
         updatedAt: '2026-02-14T12:00:00+00:00',
         imageHash: 'entry-2',
+        melodyInstrument: 'piano',
+        leftHandInstrument: 'piano',
       },
     ])
     apiMocks.getCatalogEntry.mockResolvedValue({
@@ -210,6 +226,8 @@ describe('App', () => {
       createdAt: '2026-02-14T12:00:00+00:00',
       updatedAt: '2026-02-14T12:00:00+00:00',
       imageHash: 'entry-2',
+      melodyInstrument: 'piano',
+      leftHandInstrument: 'piano',
       result: {
         tempo: 88,
         timeSignature: '4/4',
@@ -255,6 +273,8 @@ describe('App', () => {
           createdAt: '2026-02-14T12:00:00+00:00',
           updatedAt: '2026-02-14T12:00:00+00:00',
           imageHash: 'entry-2',
+          melodyInstrument: 'piano',
+          leftHandInstrument: 'piano',
         },
       ])
       .mockResolvedValueOnce([])

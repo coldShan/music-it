@@ -7,6 +7,7 @@
 - 新增双手播放事件（右手旋律 + 左手主伴奏声部）
 - 按 MusicXML 语义输出断句字段（`gateBeat` / `phraseBreakAfter` / `articulation`）
 - 前端展示音符表并自动弹奏（支持双手/只右手/只左手）
+- 支持旋律/左手独立音色（钢琴、吉他、八音盒、小提琴、小号、萨克斯、笛子）
 - 已识别曲目目录（持久化到项目目录，可直接播放、重命名、删除）
 
 ## 本地运行
@@ -68,8 +69,20 @@
 - `voice`: 来源声部
 - `sourceMeasure`: 来源小节号
 
+### 曲目音色字段
+- `melodyInstrument`: 主旋律音色（默认 `piano`）
+- `leftHandInstrument`: 左手音色（默认 `piano`）
+- 支持值：`piano | guitar | musicBox | violin | trumpet | saxophone | flute`
+
+### PATCH /api/v1/catalog/{entry_id}
+- 支持部分更新，至少提供一个字段：
+  - `title?: string`
+  - `melodyInstrument?: InstrumentId`
+  - `leftHandInstrument?: InstrumentId`
+
 ## 限制
 - 仅支持印刷体五线谱；右手输出主旋律，左手仅取 `staff=2` 主伴奏声部。
+- 音色样本首播需要网络加载，加载失败会自动回退钢琴。
 - 暂不支持左手全声部混合、复杂装饰音、手写谱和实时摄像头。
 
 ## 识别日志与复盘

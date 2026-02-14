@@ -1,6 +1,7 @@
 import type {
   CatalogEntryDetail,
   CatalogEntrySummary,
+  InstrumentId,
   RecognizeApiResponse,
 } from '@music-it/shared-types'
 
@@ -37,16 +38,22 @@ export async function getCatalogEntry(entryId: string): Promise<CatalogEntryDeta
   return (await parseJsonOrThrow(response)) as CatalogEntryDetail
 }
 
-export async function renameCatalogEntry(
+type UpdateCatalogEntryPayload = {
+  title?: string
+  melodyInstrument?: InstrumentId
+  leftHandInstrument?: InstrumentId
+}
+
+export async function updateCatalogEntry(
   entryId: string,
-  title: string,
+  payload: UpdateCatalogEntryPayload,
 ): Promise<CatalogEntrySummary> {
   const response = await fetch(`${BASE_URL}/api/v1/catalog/${entryId}`, {
     method: 'PATCH',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ title }),
+    body: JSON.stringify(payload),
   })
   return (await parseJsonOrThrow(response)) as CatalogEntrySummary
 }

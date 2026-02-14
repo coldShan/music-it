@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import type { CatalogEntrySummary } from '@music-it/shared-types'
+import type { CatalogEntrySummary, InstrumentId } from '@music-it/shared-types'
 
 defineProps<{
   entries: CatalogEntrySummary[]
   loading: boolean
   activeId: string | null
+  instrumentLabelMap: Record<InstrumentId, string>
 }>()
 
 const emit = defineEmits<{
@@ -41,6 +42,9 @@ function onDelete(entryId: string) {
           <p class="title">{{ entry.title }}</p>
           <p class="meta">
             {{ entry.imagePath }} · {{ entry.timeSignature }} · {{ entry.tempo }} BPM · {{ entry.noteCount }} 音符
+          </p>
+          <p class="meta">
+            旋律: {{ instrumentLabelMap[entry.melodyInstrument] }} · 左手: {{ instrumentLabelMap[entry.leftHandInstrument] }}
           </p>
         </div>
 

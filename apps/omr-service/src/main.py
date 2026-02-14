@@ -11,7 +11,7 @@ from src.models import (
     CatalogEntryDetail,
     CatalogEntrySummary,
     RecognizeApiResponse,
-    UpdateCatalogTitleRequest,
+    UpdateCatalogEntryRequest,
 )
 from src.services.catalog_service import (
     CatalogNotFoundError,
@@ -61,10 +61,15 @@ def get_catalog_entry(entry_id: str) -> CatalogEntryDetail:
 
 
 @app.patch("/api/v1/catalog/{entry_id}", response_model=CatalogEntrySummary)
-def update_catalog_title(entry_id: str, payload: UpdateCatalogTitleRequest) -> CatalogEntrySummary:
+def update_catalog_entry(entry_id: str, payload: UpdateCatalogEntryRequest) -> CatalogEntrySummary:
     service = CatalogService()
     try:
-        return service.update_title(entry_id, payload.title)
+        return service.update_entry(
+            entry_id,
+            title=payload.title,
+            melody_instrument=payload.melodyInstrument,
+            left_hand_instrument=payload.leftHandInstrument,
+        )
     except CatalogValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except CatalogNotFoundError as exc:
@@ -116,6 +121,8 @@ async def recognize(file: UploadFile = File(...)):
                 **detail.result.model_dump(),
                 catalogEntryId=detail.id,
                 catalogTitle=detail.title,
+                melodyInstrument=detail.melodyInstrument,
+                leftHandInstrument=detail.leftHandInstrument,
                 isReused=True,
             )
         except CatalogNotFoundError as exc:
@@ -140,6 +147,8 @@ async def recognize(file: UploadFile = File(...)):
                 **result.model_dump(),
                 catalogEntryId=entry.id,
                 catalogTitle=entry.title,
+                melodyInstrument=entry.melodyInstrument,
+                leftHandInstrument=entry.leftHandInstrument,
                 isReused=False,
             )
         except CatalogStorageError as exc:

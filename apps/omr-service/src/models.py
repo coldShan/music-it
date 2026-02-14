@@ -1,6 +1,9 @@
 from pydantic import BaseModel, Field
 from typing import Literal
 
+InstrumentId = Literal["piano", "guitar", "musicBox", "violin", "trumpet", "saxophone", "flute"]
+SUPPORTED_INSTRUMENTS = ("piano", "guitar", "musicBox", "violin", "trumpet", "saxophone", "flute")
+
 
 class RecognizedNote(BaseModel):
     pitch: str
@@ -50,6 +53,8 @@ class CatalogEntrySummary(BaseModel):
     createdAt: str
     updatedAt: str
     imageHash: str
+    melodyInstrument: InstrumentId
+    leftHandInstrument: InstrumentId
 
 
 class CatalogEntryDetail(CatalogEntrySummary):
@@ -59,8 +64,12 @@ class CatalogEntryDetail(CatalogEntrySummary):
 class RecognizeApiResponse(RecognizeResponse):
     catalogEntryId: str
     catalogTitle: str
+    melodyInstrument: InstrumentId
+    leftHandInstrument: InstrumentId
     isReused: bool
 
 
-class UpdateCatalogTitleRequest(BaseModel):
-    title: str
+class UpdateCatalogEntryRequest(BaseModel):
+    title: str | None = None
+    melodyInstrument: str | None = None
+    leftHandInstrument: str | None = None

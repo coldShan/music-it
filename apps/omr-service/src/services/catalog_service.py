@@ -11,9 +11,11 @@ import tempfile
 from src.models import (
     CatalogEntryDetail,
     CatalogEntrySummary,
+    InstrumentId,
     PlaybackEvent,
     RecognizedNote,
     RecognizeResponse,
+    SUPPORTED_INSTRUMENTS,
 )
 
 
@@ -56,6 +58,10 @@ class CatalogService:
     @staticmethod
     def compute_hash(content: bytes) -> str:
         return hashlib.sha256(content).hexdigest()
+
+    @staticmethod
+    def _default_instruments() -> tuple[InstrumentId, InstrumentId]:
+        return "piano", "piano"
 
     def _ensure_layout(self) -> None:
         self.images_dir.mkdir(parents=True, exist_ok=True)
@@ -107,8 +113,31 @@ class CatalogService:
                 return index, item
         raise CatalogNotFoundError(f"Catalog entry not found: {entry_id}")
 
+    def _summary_from_raw(self, raw: dict) -> CatalogEntrySummary:
+        payload = dict(raw)
+        melody_default, left_default = self._default_instruments()
+        if payload.get("melodyInstrument") not in SUPPORTED_INSTRUMENTS:
+            payload["melodyInstrument"] = melody_default
+        if payload.get("leftHandInstrument") not in SUPPORTED_INSTRUMENTS:
+            payload["leftHandInstrument"] = left_default
+        return CatalogEntrySummary(**payload)
+
+    @staticmethod
+    def _normalize_instrument(value: str | None) -> InstrumentId | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if normalized not in SUPPORTED_INSTRUMENTS:
+            supported = ", ".join(SUPPORTED_INSTRUMENTS)
+            raise CatalogValidationError(
+                f"Unsupported instrument: {normalized}. Supported values: {supported}"
+            )
+        return normalized  # type: ignore[return-value]
+
     def _normalize_entries(self, entries: list[dict]) -> list[CatalogEntrySummary]:
-        normalized = [CatalogEntrySummary(**item) for item in entries]
+        normalized = [self._summary_from_raw(item) for item in entries]
         normalized.sort(key=lambda item: item.updatedAt, reverse=True)
         return normalized
 
@@ -120,7 +149,7 @@ class CatalogService:
         index = self._read_index()
         for entry in index["entries"]:
             if entry.get("imageHash") == image_hash:
-                return CatalogEntrySummary(**entry)
+                return self._summary_from_raw(entry)
         return None
 
     @staticmethod
@@ -151,7 +180,7 @@ class CatalogService:
     def get_entry(self, entry_id: str) -> CatalogEntryDetail:
         index = self._read_index()
         _, raw_summary = self._entry_by_id(index["entries"], entry_id)
-        summary = CatalogEntrySummary(**raw_summary)
+        summary = self._summary_from_raw(raw_summary)
 
         record_path = self._record_path(entry_id)
         if not record_path.exists():
@@ -186,7 +215,7 @@ class CatalogService:
     def touch_entry(self, entry_id: str) -> CatalogEntrySummary:
         index = self._read_index()
         entry_index, raw_summary = self._entry_by_id(index["entries"], entry_id)
-        summary = CatalogEntrySummary(**raw_summary)
+        summary = self._summary_from_raw(raw_summary)
         summary.updatedAt = self._now_iso()
         index["entries"][entry_index] = summary.model_dump()
         self._write_index(index)
@@ -218,6 +247,7 @@ class CatalogService:
 
         now = self._now_iso()
         title = Path(original_filename).stem.strip() or f"score-{image_hash[:8]}"
+        melody_default, left_default = self._default_instruments()
         summary = CatalogEntrySummary(
             id=image_hash,
             title=title,
@@ -229,6 +259,8 @@ class CatalogService:
             createdAt=now,
             updatedAt=now,
             imageHash=image_hash,
+            melodyInstrument=melody_default,
+            leftHandInstrument=left_default,
         )
 
         index = self._read_index()
@@ -246,15 +278,39 @@ class CatalogService:
 
         return CatalogEntryDetail(**summary.model_dump(), result=result)
 
-    def update_title(self, entry_id: str, title: str) -> CatalogEntrySummary:
-        normalized = title.strip()
-        if not normalized:
+    def update_entry(
+        self,
+        entry_id: str,
+        *,
+        title: str | None = None,
+        melody_instrument: str | None = None,
+        left_hand_instrument: str | None = None,
+    ) -> CatalogEntrySummary:
+        normalized_title = title.strip() if title is not None else None
+        normalized_melody = self._normalize_instrument(melody_instrument)
+        normalized_left = self._normalize_instrument(left_hand_instrument)
+
+        if title is not None and not normalized_title:
             raise CatalogValidationError("Title cannot be empty")
+
+        has_update = any(
+            value is not None and value != ""
+            for value in (normalized_title, normalized_melody, normalized_left)
+        )
+        if not has_update:
+            raise CatalogValidationError(
+                "At least one of title, melodyInstrument, leftHandInstrument is required"
+            )
 
         index = self._read_index()
         entry_index, raw_summary = self._entry_by_id(index["entries"], entry_id)
-        summary = CatalogEntrySummary(**raw_summary)
-        summary.title = normalized
+        summary = self._summary_from_raw(raw_summary)
+        if normalized_title is not None:
+            summary.title = normalized_title
+        if normalized_melody is not None:
+            summary.melodyInstrument = normalized_melody
+        if normalized_left is not None:
+            summary.leftHandInstrument = normalized_left
         summary.updatedAt = self._now_iso()
 
         index["entries"][entry_index] = summary.model_dump()
@@ -266,7 +322,7 @@ class CatalogService:
     def delete_entry(self, entry_id: str) -> CatalogEntrySummary:
         index = self._read_index()
         entry_index, raw_summary = self._entry_by_id(index["entries"], entry_id)
-        summary = CatalogEntrySummary(**raw_summary)
+        summary = self._summary_from_raw(raw_summary)
 
         del index["entries"][entry_index]
         self._write_index(index)

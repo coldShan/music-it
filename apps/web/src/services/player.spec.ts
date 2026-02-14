@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import type { InstrumentId } from '@music-it/shared-types'
 
-import { filterPlaybackEvents } from './player'
+import { filterPlaybackEvents, loadInstrumentWithFallback, resolveHandInstrument } from './player'
 
 const sampleEvents = [
   {
@@ -42,5 +43,33 @@ describe('filterPlaybackEvents', () => {
     const filtered = filterPlaybackEvents(sampleEvents, 'left')
     expect(filtered).toHaveLength(1)
     expect(filtered[0].hand).toBe('left')
+  })
+})
+
+describe('resolveHandInstrument', () => {
+  it('routes right hand to melody instrument', () => {
+    expect(resolveHandInstrument('right', 'violin', 'guitar')).toBe('violin')
+  })
+
+  it('routes left hand to left-hand instrument', () => {
+    expect(resolveHandInstrument('left', 'violin', 'guitar')).toBe('guitar')
+  })
+})
+
+describe('loadInstrumentWithFallback', () => {
+  it('falls back to piano when non-piano load fails', async () => {
+    const fakePlayer = {
+      play: () => null,
+    } as any
+    const loader = async (value: InstrumentId) => {
+      if (value === 'guitar') {
+        throw new Error('load failed')
+      }
+      return fakePlayer
+    }
+
+    const loaded = await loadInstrumentWithFallback('guitar', loader)
+    expect(loaded.resolved).toBe('piano')
+    expect(loaded.warning).toContain('guitar')
   })
 })

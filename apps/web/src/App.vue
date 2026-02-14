@@ -3,11 +3,13 @@ import { computed, onMounted, ref } from 'vue'
 import type {
   CatalogEntryDetail,
   CatalogEntrySummary,
+  InstrumentId,
   PlaybackEvent,
   RecognizeApiResponse,
   RecognizeResponse,
 } from '@music-it/shared-types'
 
+import { instrumentLabelMap, instrumentOptions } from './constants/instruments'
 import CatalogList from './components/CatalogList.vue'
 import ResultTable from './components/ResultTable.vue'
 import UploadField from './components/UploadField.vue'
@@ -17,9 +19,9 @@ import {
   listCatalogEntries,
   recognizeScore,
   resetCatalog,
-  renameCatalogEntry,
+  updateCatalogEntry,
 } from './services/api'
-import { playScore, stopScore, type PlaybackMode } from './services/player'
+import { filterPlaybackEvents, playScore, stopScore, type PlaybackMode } from './services/player'
 
 const selectedFile = ref<File | null>(null)
 const loading = ref(false)
@@ -31,7 +33,10 @@ const catalogEntries = ref<CatalogEntrySummary[]>([])
 const catalogLoading = ref(false)
 const activeCatalogId = ref<string | null>(null)
 const resetLoading = ref(false)
+const instrumentSaving = ref(false)
 const playbackMode = ref<PlaybackMode>('both')
+const melodyInstrument = ref<InstrumentId>('piano')
+const leftHandInstrument = ref<InstrumentId>('piano')
 
 function fallbackPlaybackEventsFromNotes(scoreNotes: RecognizeResponse['notes']): PlaybackEvent[] {
   return scoreNotes.map((note) => ({
@@ -58,6 +63,8 @@ const resolvedPlaybackEvents = computed(() => {
 })
 
 const canPlay = computed(() => !!resolvedPlaybackEvents.value.length)
+const melodyInstrumentLabel = computed(() => instrumentLabelMap[melodyInstrument.value])
+const leftHandInstrumentLabel = computed(() => instrumentLabelMap[leftHandInstrument.value])
 
 function toRecognizeResponse(response: RecognizeApiResponse): RecognizeResponse {
   return {
@@ -67,6 +74,11 @@ function toRecognizeResponse(response: RecognizeApiResponse): RecognizeResponse 
     playbackEvents: response.playbackEvents ?? [],
     meta: response.meta,
   }
+}
+
+function applyCatalogInstruments(melody: InstrumentId, left: InstrumentId) {
+  melodyInstrument.value = melody
+  leftHandInstrument.value = left
 }
 
 async function refreshCatalog() {
@@ -91,8 +103,26 @@ async function promptRename(entryId: string, currentTitle: string) {
     return
   }
 
-  await renameCatalogEntry(entryId, title)
+  await updateCatalogEntry(entryId, { title })
   await refreshCatalog()
+}
+
+async function playWithCurrentSettings(tempo: number, events: PlaybackEvent[]) {
+  const filtered = filterPlaybackEvents(events, playbackMode.value)
+  if (!filtered.length) {
+    autoPlayMessage.value =
+      playbackMode.value === 'left' ? '当前曲目无左手事件。' : '当前播放模式下没有可播放事件。'
+    return
+  }
+
+  const warnings = await playScore({
+    tempo,
+    playbackEvents: events,
+    mode: playbackMode.value,
+    melodyInstrument: melodyInstrument.value,
+    leftHandInstrument: leftHandInstrument.value,
+  })
+  autoPlayMessage.value = warnings[0] ?? ''
 }
 
 async function onRecognize() {
@@ -109,6 +139,7 @@ async function onRecognize() {
     const response = await recognizeScore(selectedFile.value)
     result.value = toRecognizeResponse(response)
     activeCatalogId.value = response.catalogEntryId
+    applyCatalogInstruments(response.melodyInstrument, response.leftHandInstrument)
     await refreshCatalog()
 
     try {
@@ -122,13 +153,10 @@ async function onRecognize() {
 
     if (playbackEvents.length) {
       try {
-        await playScore({
-          tempo: response.tempo,
-          playbackEvents,
-          mode: playbackMode.value,
-        })
-      } catch {
-        autoPlayMessage.value = '浏览器阻止了自动播放，请点击“播放”按钮。'
+        await playWithCurrentSettings(response.tempo, playbackEvents)
+      } catch (error) {
+        autoPlayMessage.value =
+          error instanceof Error ? error.message : '浏览器阻止了自动播放，请点击“播放”按钮。'
       }
     }
   } catch (error) {
@@ -143,11 +171,7 @@ async function onPlay() {
   if (!result.value || !resolvedPlaybackEvents.value.length) {
     return
   }
-  await playScore({
-    tempo: result.value.tempo,
-    playbackEvents: resolvedPlaybackEvents.value,
-    mode: playbackMode.value,
-  })
+  await playWithCurrentSettings(result.value.tempo, resolvedPlaybackEvents.value)
 }
 
 async function onPlayFromCatalog(entryId: string) {
@@ -158,15 +182,12 @@ async function onPlayFromCatalog(entryId: string) {
     const detail: CatalogEntryDetail = await getCatalogEntry(entryId)
     result.value = detail.result
     activeCatalogId.value = detail.id
+    applyCatalogInstruments(detail.melodyInstrument, detail.leftHandInstrument)
     const playbackEvents =
       detail.result.playbackEvents?.length
         ? detail.result.playbackEvents
         : fallbackPlaybackEventsFromNotes(detail.result.notes)
-    await playScore({
-      tempo: detail.result.tempo,
-      playbackEvents,
-      mode: playbackMode.value,
-    })
+    await playWithCurrentSettings(detail.result.tempo, playbackEvents)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '播放失败'
   }
@@ -209,6 +230,37 @@ async function onResetCatalog() {
   }
 }
 
+async function onInstrumentChange(hand: 'melody' | 'left', value: InstrumentId) {
+  const previousMelody = melodyInstrument.value
+  const previousLeft = leftHandInstrument.value
+
+  if (hand === 'melody') {
+    melodyInstrument.value = value
+  } else {
+    leftHandInstrument.value = value
+  }
+
+  if (!activeCatalogId.value) {
+    return
+  }
+
+  instrumentSaving.value = true
+  errorMessage.value = ''
+  try {
+    await updateCatalogEntry(activeCatalogId.value, {
+      melodyInstrument: melodyInstrument.value,
+      leftHandInstrument: leftHandInstrument.value,
+    })
+    await refreshCatalog()
+  } catch (error) {
+    melodyInstrument.value = previousMelody
+    leftHandInstrument.value = previousLeft
+    errorMessage.value = error instanceof Error ? error.message : '音色保存失败，已回退显示'
+  } finally {
+    instrumentSaving.value = false
+  }
+}
+
 function onStop() {
   stopScore()
 }
@@ -241,6 +293,7 @@ onMounted(() => {
         :entries="catalogEntries"
         :loading="catalogLoading"
         :active-id="activeCatalogId"
+        :instrument-label-map="instrumentLabelMap"
         @play="onPlayFromCatalog"
         @delete="onDeleteFromCatalog"
       />
@@ -274,9 +327,47 @@ onMounted(() => {
               <option value="left">只左手</option>
             </select>
           </div>
+          <div class="mode-switch">
+            <label for="melody-instrument">主旋律音色</label>
+            <select
+              id="melody-instrument"
+              :value="melodyInstrument"
+              :disabled="instrumentSaving"
+              @change="onInstrumentChange('melody', ($event.target as HTMLSelectElement).value as InstrumentId)"
+            >
+              <option
+                v-for="option in instrumentOptions"
+                :key="`melody-${option.value}`"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+          </div>
+          <div class="mode-switch">
+            <label for="left-instrument">左手音色</label>
+            <select
+              id="left-instrument"
+              :value="leftHandInstrument"
+              :disabled="instrumentSaving"
+              @change="onInstrumentChange('left', ($event.target as HTMLSelectElement).value as InstrumentId)"
+            >
+              <option
+                v-for="option in instrumentOptions"
+                :key="`left-${option.value}`"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+          </div>
           <button type="button" @click="onPlay" :disabled="!canPlay">播放</button>
           <button type="button" class="secondary" @click="onStop">停止</button>
         </div>
+
+        <p class="hint">
+          当前音色：旋律 {{ melodyInstrumentLabel }}，左手 {{ leftHandInstrumentLabel }}（切换后下次播放生效）
+        </p>
 
         <ul v-if="result.meta.warnings.length" class="warnings">
           <li v-for="warning in result.meta.warnings" :key="warning">{{ warning }}</li>

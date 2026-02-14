@@ -75,6 +75,8 @@ def test_recognize_png_returns_notes_and_catalog_fields(monkeypatch, tmp_path: P
     assert body["playbackEvents"][0]["pitches"] == ["G4"]
     assert body["catalogEntryId"]
     assert body["catalogTitle"] == "score"
+    assert body["melodyInstrument"] == "piano"
+    assert body["leftHandInstrument"] == "piano"
     assert body["isReused"] is False
 
 
@@ -125,6 +127,20 @@ def test_catalog_endpoints(monkeypatch, tmp_path: Path) -> None:
     rename = client.patch(f"/api/v1/catalog/{entry_id}", json={"title": "遇见"})
     assert rename.status_code == 200
     assert rename.json()["title"] == "遇见"
+
+    instrument = client.patch(
+        f"/api/v1/catalog/{entry_id}",
+        json={"melodyInstrument": "violin", "leftHandInstrument": "guitar"},
+    )
+    assert instrument.status_code == 200
+    assert instrument.json()["melodyInstrument"] == "violin"
+    assert instrument.json()["leftHandInstrument"] == "guitar"
+
+    invalid = client.patch(
+        f"/api/v1/catalog/{entry_id}",
+        json={"melodyInstrument": "bad-value"},
+    )
+    assert invalid.status_code == 400
 
     delete = client.delete(f"/api/v1/catalog/{entry_id}")
     assert delete.status_code == 200

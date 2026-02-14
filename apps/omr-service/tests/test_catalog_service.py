@@ -59,6 +59,8 @@ def test_create_reuse_and_list_entries(tmp_path: Path) -> None:
     assert detail.id == first.id
     assert len(entries) == 1
     assert entries[0].imageHash == image_hash
+    assert entries[0].melodyInstrument == "piano"
+    assert entries[0].leftHandInstrument == "piano"
     assert detail.result.playbackEvents[0].pitches == ["A4"]
 
 
@@ -74,15 +76,22 @@ def test_update_and_delete_entry(tmp_path: Path) -> None:
         image_hash=image_hash,
     )
 
-    updated = service.update_title(detail.id, "新标题")
+    updated = service.update_entry(
+        detail.id,
+        title="新标题",
+        melody_instrument="violin",
+        left_hand_instrument="guitar",
+    )
     assert updated.title == "新标题"
+    assert updated.melodyInstrument == "violin"
+    assert updated.leftHandInstrument == "guitar"
 
     deleted = service.delete_entry(detail.id)
     assert deleted.id == detail.id
     assert service.list_entries() == []
 
 
-def test_update_title_rejects_empty_value(tmp_path: Path) -> None:
+def test_update_entry_rejects_invalid_payload(tmp_path: Path) -> None:
     service = CatalogService(root_dir=tmp_path)
     content = b"another-image"
     image_hash = service.compute_hash(content)
@@ -95,7 +104,13 @@ def test_update_title_rejects_empty_value(tmp_path: Path) -> None:
     )
 
     try:
-        service.update_title(detail.id, "   ")
+        service.update_entry(detail.id, title="   ")
+        raise AssertionError("should raise")
+    except CatalogValidationError:
+        pass
+
+    try:
+        service.update_entry(detail.id, melody_instrument="bad-value")
         raise AssertionError("should raise")
     except CatalogValidationError:
         pass
@@ -149,3 +164,24 @@ def test_get_entry_fallbacks_playback_events_for_legacy_record(tmp_path: Path) -
     loaded = service.get_entry(detail.id)
     assert len(loaded.result.playbackEvents) == 1
     assert loaded.result.playbackEvents[0].hand == "right"
+
+
+def test_list_entries_fallbacks_instruments_for_legacy_index(tmp_path: Path) -> None:
+    service = CatalogService(root_dir=tmp_path)
+    detail = service.create_entry(
+        content=b"legacy",
+        original_filename="legacy.png",
+        input_type="png",
+        result=_result(),
+        image_hash=service.compute_hash(b"legacy"),
+    )
+
+    index_data = service._read_index()  # noqa: SLF001
+    index_data["entries"][0].pop("melodyInstrument", None)
+    index_data["entries"][0].pop("leftHandInstrument", None)
+    service._write_index(index_data)  # noqa: SLF001
+
+    entries = service.list_entries()
+    assert entries[0].id == detail.id
+    assert entries[0].melodyInstrument == "piano"
+    assert entries[0].leftHandInstrument == "piano"
