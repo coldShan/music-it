@@ -15,6 +15,9 @@ defineProps<{
           <th>MIDI</th>
           <th>起始拍</th>
           <th>时值(拍)</th>
+          <th>发音时值(拍)</th>
+          <th>断句</th>
+          <th>奏法</th>
           <th>小节</th>
         </tr>
       </thead>
@@ -24,6 +27,9 @@ defineProps<{
           <td>{{ note.midi }}</td>
           <td>{{ note.startBeat }}</td>
           <td>{{ note.durationBeat }}</td>
+          <td>{{ note.gateBeat }}</td>
+          <td>{{ note.phraseBreakAfter ? '是' : '否' }}</td>
+          <td>{{ note.articulation }}</td>
           <td>{{ note.sourceMeasure }}</td>
         </tr>
       </tbody>

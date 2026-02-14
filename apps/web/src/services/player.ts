@@ -1,18 +1,31 @@
 import * as Tone from 'tone'
-import type { RecognizedNote } from '@music-it/shared-types'
+import type { PlaybackEvent } from '@music-it/shared-types'
 
+export type PlaybackMode = 'both' | 'right' | 'left'
 type PlaybackOptions = {
   tempo: number
-  notes: RecognizedNote[]
+  playbackEvents: PlaybackEvent[]
+  mode?: PlaybackMode
 }
 
 let part: Tone.Part | null = null
 let synth: Tone.PolySynth | null = null
 
-export async function playScore(options: PlaybackOptions): Promise<void> {
-  const { tempo, notes } = options
+export function filterPlaybackEvents(
+  events: PlaybackEvent[],
+  mode: PlaybackMode = 'both',
+): PlaybackEvent[] {
+  if (mode === 'both') {
+    return events
+  }
+  return events.filter((event) => event.hand === mode)
+}
 
-  if (!notes.length) {
+export async function playScore(options: PlaybackOptions): Promise<void> {
+  const { tempo, playbackEvents, mode = 'both' } = options
+  const targetEvents = filterPlaybackEvents(playbackEvents, mode)
+
+  if (!targetEvents.length) {
     return
   }
 
@@ -37,14 +50,14 @@ export async function playScore(options: PlaybackOptions): Promise<void> {
 
   Tone.getTransport().bpm.value = tempo
 
-  const events = notes.map((note) => ({
-    time: (note.startBeat * 60) / tempo,
-    note: note.pitch,
-    durationSeconds: (note.durationBeat * 60) / tempo,
+  const events = targetEvents.map((event) => ({
+    time: (event.startBeat * 60) / tempo,
+    notes: event.pitches,
+    durationSeconds: (event.gateBeat * 60) / tempo,
   }))
 
   part = new Tone.Part((time, event) => {
-    synth?.triggerAttackRelease(event.note, event.durationSeconds, time)
+    synth?.triggerAttackRelease(event.notes, event.durationSeconds, time)
   }, events)
 
   part.start(0)

@@ -1,11 +1,25 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import type { RecognizeResponse } from '@music-it/shared-types'
+import { computed, onMounted, ref } from 'vue'
+import type {
+  CatalogEntryDetail,
+  CatalogEntrySummary,
+  PlaybackEvent,
+  RecognizeApiResponse,
+  RecognizeResponse,
+} from '@music-it/shared-types'
 
+import CatalogList from './components/CatalogList.vue'
 import ResultTable from './components/ResultTable.vue'
 import UploadField from './components/UploadField.vue'
-import { recognizeScore } from './services/api'
-import { playScore, stopScore } from './services/player'
+import {
+  deleteCatalogEntry,
+  getCatalogEntry,
+  listCatalogEntries,
+  recognizeScore,
+  resetCatalog,
+  renameCatalogEntry,
+} from './services/api'
+import { playScore, stopScore, type PlaybackMode } from './services/player'
 
 const selectedFile = ref<File | null>(null)
 const loading = ref(false)
@@ -13,7 +27,73 @@ const errorMessage = ref('')
 const result = ref<RecognizeResponse | null>(null)
 const autoPlayMessage = ref('')
 
-const canPlay = computed(() => !!result.value?.notes.length)
+const catalogEntries = ref<CatalogEntrySummary[]>([])
+const catalogLoading = ref(false)
+const activeCatalogId = ref<string | null>(null)
+const resetLoading = ref(false)
+const playbackMode = ref<PlaybackMode>('both')
+
+function fallbackPlaybackEventsFromNotes(scoreNotes: RecognizeResponse['notes']): PlaybackEvent[] {
+  return scoreNotes.map((note) => ({
+    startBeat: note.startBeat,
+    durationBeat: note.durationBeat,
+    gateBeat: note.gateBeat,
+    pitches: [note.pitch],
+    midis: [note.midi],
+    hand: 'right',
+    staff: '1',
+    voice: '1',
+    sourceMeasure: note.sourceMeasure,
+  }))
+}
+
+const resolvedPlaybackEvents = computed(() => {
+  if (!result.value) {
+    return [] as PlaybackEvent[]
+  }
+  if (result.value.playbackEvents?.length) {
+    return result.value.playbackEvents
+  }
+  return fallbackPlaybackEventsFromNotes(result.value.notes)
+})
+
+const canPlay = computed(() => !!resolvedPlaybackEvents.value.length)
+
+function toRecognizeResponse(response: RecognizeApiResponse): RecognizeResponse {
+  return {
+    tempo: response.tempo,
+    timeSignature: response.timeSignature,
+    notes: response.notes,
+    playbackEvents: response.playbackEvents ?? [],
+    meta: response.meta,
+  }
+}
+
+async function refreshCatalog() {
+  catalogLoading.value = true
+  try {
+    catalogEntries.value = await listCatalogEntries()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '目录加载失败'
+  } finally {
+    catalogLoading.value = false
+  }
+}
+
+async function promptRename(entryId: string, currentTitle: string) {
+  const input = window.prompt('识别成功，请输入曲目名称', currentTitle)
+  if (input === null) {
+    return
+  }
+
+  const title = input.trim()
+  if (!title || title === currentTitle) {
+    return
+  }
+
+  await renameCatalogEntry(entryId, title)
+  await refreshCatalog()
+}
 
 async function onRecognize() {
   if (!selectedFile.value) {
@@ -27,11 +107,26 @@ async function onRecognize() {
 
   try {
     const response = await recognizeScore(selectedFile.value)
-    result.value = response
+    result.value = toRecognizeResponse(response)
+    activeCatalogId.value = response.catalogEntryId
+    await refreshCatalog()
 
-    if (response.notes.length) {
+    try {
+      await promptRename(response.catalogEntryId, response.catalogTitle)
+    } catch {
+      errorMessage.value = '重命名失败，已保留默认标题。'
+    }
+
+    const playbackEvents =
+      response.playbackEvents?.length ? response.playbackEvents : fallbackPlaybackEventsFromNotes(response.notes)
+
+    if (playbackEvents.length) {
       try {
-        await playScore({ tempo: response.tempo, notes: response.notes })
+        await playScore({
+          tempo: response.tempo,
+          playbackEvents,
+          mode: playbackMode.value,
+        })
       } catch {
         autoPlayMessage.value = '浏览器阻止了自动播放，请点击“播放”按钮。'
       }
@@ -45,15 +140,82 @@ async function onRecognize() {
 }
 
 async function onPlay() {
-  if (!result.value) {
+  if (!result.value || !resolvedPlaybackEvents.value.length) {
     return
   }
-  await playScore({ tempo: result.value.tempo, notes: result.value.notes })
+  await playScore({
+    tempo: result.value.tempo,
+    playbackEvents: resolvedPlaybackEvents.value,
+    mode: playbackMode.value,
+  })
+}
+
+async function onPlayFromCatalog(entryId: string) {
+  errorMessage.value = ''
+  autoPlayMessage.value = ''
+
+  try {
+    const detail: CatalogEntryDetail = await getCatalogEntry(entryId)
+    result.value = detail.result
+    activeCatalogId.value = detail.id
+    const playbackEvents =
+      detail.result.playbackEvents?.length
+        ? detail.result.playbackEvents
+        : fallbackPlaybackEventsFromNotes(detail.result.notes)
+    await playScore({
+      tempo: detail.result.tempo,
+      playbackEvents,
+      mode: playbackMode.value,
+    })
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '播放失败'
+  }
+}
+
+async function onDeleteFromCatalog(entryId: string) {
+  errorMessage.value = ''
+
+  try {
+    await deleteCatalogEntry(entryId)
+    if (activeCatalogId.value === entryId) {
+      stopScore()
+      activeCatalogId.value = null
+      result.value = null
+    }
+    await refreshCatalog()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '删除失败'
+  }
+}
+
+async function onResetCatalog() {
+  if (!window.confirm('将清空已识别目录和缓存文件，是否继续？')) {
+    return
+  }
+
+  resetLoading.value = true
+  errorMessage.value = ''
+
+  try {
+    await resetCatalog('WIPE_CATALOG')
+    stopScore()
+    result.value = null
+    activeCatalogId.value = null
+    await refreshCatalog()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '目录重置失败'
+  } finally {
+    resetLoading.value = false
+  }
 }
 
 function onStop() {
   stopScore()
 }
+
+onMounted(() => {
+  void refreshCatalog()
+})
 </script>
 
 <template>
@@ -75,14 +237,43 @@ function onStop() {
       <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
       <p v-if="autoPlayMessage" class="hint">{{ autoPlayMessage }}</p>
 
+      <CatalogList
+        :entries="catalogEntries"
+        :loading="catalogLoading"
+        :active-id="activeCatalogId"
+        @play="onPlayFromCatalog"
+        @delete="onDeleteFromCatalog"
+      />
+
+      <div class="catalog-tools">
+        <button
+          type="button"
+          class="danger"
+          :disabled="catalogLoading || resetLoading"
+          data-testid="catalog-reset"
+          @click="onResetCatalog"
+        >
+          {{ resetLoading ? '重置中...' : '清空旧目录（重置）' }}
+        </button>
+      </div>
+
       <section v-if="result" class="result">
         <div class="meta">
           <p>Tempo: {{ result.tempo }} BPM</p>
           <p>拍号: {{ result.timeSignature }}</p>
           <p>音符数: {{ result.notes.length }}</p>
+          <p>播放事件数: {{ resolvedPlaybackEvents.length }}</p>
         </div>
 
         <div class="actions">
+          <div class="mode-switch">
+            <label for="playback-mode">播放声部</label>
+            <select id="playback-mode" v-model="playbackMode">
+              <option value="both">双手</option>
+              <option value="right">只右手</option>
+              <option value="left">只左手</option>
+            </select>
+          </div>
           <button type="button" @click="onPlay" :disabled="!canPlay">播放</button>
           <button type="button" class="secondary" @click="onStop">停止</button>
         </div>
@@ -121,9 +312,11 @@ function onStop() {
     border: 1px solid #9f9079;
     box-shadow: 0 12px 40px rgba(53, 33, 8, 0.16);
     animation: rise 420ms ease-out;
+    display: grid;
+    gap: 16px;
 
     header {
-      margin-bottom: 20px;
+      margin-bottom: 2px;
 
       .kicker {
         margin: 0;
@@ -146,7 +339,7 @@ function onStop() {
     .controls {
       display: grid;
       gap: 14px;
-      margin-bottom: 16px;
+      margin-bottom: 2px;
     }
 
     button {
@@ -175,10 +368,21 @@ function onStop() {
 
     .error {
       color: #7f1f1f;
+      margin: 0;
     }
 
     .hint {
       color: #5d503f;
+      margin: 0;
+    }
+
+    .catalog-tools {
+      display: flex;
+      justify-content: flex-end;
+
+      .danger {
+        background: #7f2b2b;
+      }
     }
 
     .result {
@@ -194,7 +398,27 @@ function onStop() {
 
       .actions {
         display: flex;
+        flex-wrap: wrap;
         gap: 12px;
+
+        .mode-switch {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+
+          label {
+            color: #3b352d;
+            font-size: 14px;
+          }
+
+          select {
+            border: 1px solid #b8aa96;
+            border-radius: 8px;
+            padding: 8px 10px;
+            background: #fff8ec;
+            color: #1f1b15;
+          }
+        }
       }
 
       .warnings {

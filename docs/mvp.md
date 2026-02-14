@@ -3,8 +3,11 @@
 ## 功能
 - 上传 PNG/JPG/PDF（PDF 仅第一页）
 - 后端调用 Audiveris 识别 MusicXML
-- 解析 tempo、拍号、单旋律音符序列
-- 前端展示音符表并自动弹奏
+- 解析 tempo、拍号、右手主旋律音符序列
+- 新增双手播放事件（右手旋律 + 左手主伴奏声部）
+- 按 MusicXML 语义输出断句字段（`gateBeat` / `phraseBreakAfter` / `articulation`）
+- 前端展示音符表并自动弹奏（支持双手/只右手/只左手）
+- 已识别曲目目录（持久化到项目目录，可直接播放、重命名、删除）
 
 ## 本地运行
 1. 安装 Node 20+, pnpm, Python 3.11+, Java。
@@ -41,10 +44,33 @@
 ## API
 - `GET /api/v1/health`
 - `POST /api/v1/recognize` (multipart/form-data, field: `file`)
+- `GET /api/v1/catalog`
+- `GET /api/v1/catalog/{entry_id}`
+- `PATCH /api/v1/catalog/{entry_id}`
+- `DELETE /api/v1/catalog/{entry_id}`
+- `POST /api/v1/catalog/reset?confirm=WIPE_CATALOG`
+
+### notes 字段（识别响应）
+- `startBeat`: 起始拍
+- `durationBeat`: 记谱时值
+- `gateBeat`: 实际播放时值（用于断句）
+- `phraseBreakAfter`: 当前音后是否断句
+- `articulation`: `normal | slur | staccato | tie`
+
+### playbackEvents 字段（识别响应）
+- `startBeat`: 事件起始拍
+- `durationBeat`: 事件记谱时值（同起始拍多音取最大值）
+- `gateBeat`: 事件实际播放时值（同起始拍多音取最大值）
+- `pitches`: 同步播放音名数组（和弦）
+- `midis`: 同步播放 MIDI 数组
+- `hand`: `right | left`
+- `staff`: 来源谱表
+- `voice`: 来源声部
+- `sourceMeasure`: 来源小节号
 
 ## 限制
-- 仅支持印刷体五线谱单旋律。
-- 暂不支持双手钢琴谱、装饰音、手写谱和实时摄像头。
+- 仅支持印刷体五线谱；右手输出主旋律，左手仅取 `staff=2` 主伴奏声部。
+- 暂不支持左手全声部混合、复杂装饰音、手写谱和实时摄像头。
 
 ## 识别日志与复盘
 - 每次识别都会在后端生成运行日志目录：`apps/omr-service/run-logs/<run-id>/`
@@ -57,4 +83,15 @@
 - 可通过环境变量调整日志目录：
   ```bash
   OMR_RUN_LOG_DIR=/your/path pnpm dev
+  ```
+
+## 已识别曲目目录存储
+- 目录位于：`storage/catalog/`
+  - `index.json`：目录索引
+  - `images/`：已保存图片副本
+  - `records/`：识别结果记录
+- 同一图片按 SHA-256 去重，重复上传会复用已识别结果。
+- 如需清空历史记录（含图片和记录文件），调用：
+  ```bash
+  curl -X POST "http://localhost:8000/api/v1/catalog/reset?confirm=WIPE_CATALOG"
   ```
