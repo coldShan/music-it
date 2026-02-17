@@ -92,6 +92,11 @@ const canPlay = computed(() => !!resolvedPlaybackEvents.value.length)
 const melodyInstrumentLabel = computed(() => instrumentLabelMap[melodyInstrument.value])
 const leftHandInstrumentLabel = computed(() => instrumentLabelMap[leftHandInstrument.value])
 
+function openRecognizeDialog() {
+  recognizeDialogOpen.value = true
+  recognizeStatus.value = ''
+}
+
 function toRecognizeResponse(response: RecognizeApiResponse): RecognizeResponse {
   return {
     tempo: response.tempo,
@@ -187,7 +192,9 @@ async function onRecognize() {
       }
     }
 
-    recognizeStatus.value = '识别完成，可继续替换文件重新识别。'
+    recognizeDialogOpen.value = false
+    recognizeStatus.value = ''
+    selectedFile.value = null
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '识别失败'
     recognizeStatus.value = '识别失败，请检查文件后重试。'
@@ -336,7 +343,7 @@ onMounted(() => {
       <p class="kicker">Music It Stage</p>
       <h1>乐谱识别与自动回放台</h1>
       <p class="description">主区专注当前曲目与播放控制，目录与识别细节在两侧协同展示。</p>
-      <button data-testid="open-recognize-dialog" type="button" class="open-dialog" @click="recognizeDialogOpen = true">
+      <button data-testid="open-recognize-dialog" type="button" class="open-dialog" @click="openRecognizeDialog">
         上传并识别
       </button>
     </section>
@@ -442,6 +449,7 @@ onMounted(() => {
     </section>
 
     <RecognizeDialog
+      v-if="recognizeDialogOpen"
       v-model:open="recognizeDialogOpen"
       v-model:file="selectedFile"
       :loading="loading"

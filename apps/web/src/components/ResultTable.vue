@@ -39,6 +39,9 @@ defineProps<{
 
 <style scoped>
 .table-wrap {
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
   overflow: auto;
   border: 1px solid #8d86cf;
   border-radius: 14px;
@@ -61,7 +64,7 @@ defineProps<{
     thead th {
       position: sticky;
       top: 0;
-      z-index: 1;
+      z-index: 2;
       background: #f3efff;
       font-weight: 700;
       letter-spacing: 0.02em;

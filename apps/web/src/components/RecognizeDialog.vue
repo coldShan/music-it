@@ -28,14 +28,18 @@ const emit = defineEmits<{
   submit: []
 }>()
 
-function close() {
-  if (props.loading) {
-    return
-  }
+function forceClose() {
   if (!openModel.value) {
     return
   }
   openModel.value = false
+}
+
+function closeByButton() {
+  if (props.loading) {
+    return
+  }
+  forceClose()
 }
 
 function onSubmit() {
@@ -45,7 +49,7 @@ function onSubmit() {
 
 <template>
   <TransitionRoot :show="openModel" as="template">
-    <Dialog class="recognize-dialog" @close="close">
+    <Dialog class="recognize-dialog" @close="forceClose">
       <TransitionChild
         as="template"
         enter="ease-out duration-240"
@@ -70,7 +74,7 @@ function onSubmit() {
         >
           <DialogPanel data-testid="recognize-dialog" class="panel">
             <DialogTitle class="title">上传并识别乐谱</DialogTitle>
-            <p class="description">识别期间保持弹窗开启，可持续观察状态并替换文件重试。</p>
+            <p class="description">识别成功后弹窗会自动关闭，你可以随时再次打开继续识别。</p>
 
             <form class="content" @submit.prevent="onSubmit">
               <UploadField v-model:file="fileModel" />
@@ -84,7 +88,7 @@ function onSubmit() {
                   type="button"
                   class="ghost"
                   :disabled="loading"
-                  @click="close"
+                  @click="closeByButton"
                 >
                   关闭
                 </button>
@@ -102,22 +106,23 @@ function onSubmit() {
 
 <style scoped>
 .recognize-dialog {
-  position: relative;
-  z-index: 30;
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  isolation: isolate;
 
   .overlay {
     position: fixed;
     inset: 0;
-    background:
-      radial-gradient(circle at 10% 18%, rgba(19, 182, 255, 0.22), transparent 45%),
-      radial-gradient(circle at 82% 90%, rgba(246, 88, 184, 0.2), transparent 48%),
-      rgba(26, 21, 74, 0.5);
-    backdrop-filter: blur(4px);
+    z-index: 0;
+    background: rgba(26, 21, 74, 0.38);
+    backdrop-filter: blur(2px);
   }
 
   .dialog-wrap {
     position: fixed;
     inset: 0;
+    z-index: 1;
     display: grid;
     place-items: center;
     padding: 24px 16px;

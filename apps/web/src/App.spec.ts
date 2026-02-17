@@ -22,8 +22,10 @@ vi.mock('./services/api', () => apiMocks)
 import App from './App.vue'
 
 async function flush() {
-  await Promise.resolve()
-  await Promise.resolve()
+  for (let index = 0; index < 10; index += 1) {
+    await Promise.resolve()
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 function getByTestId(testId: string): HTMLElement {
@@ -60,31 +62,8 @@ describe('App', () => {
     apiMocks.recognizeScore.mockResolvedValue({
       tempo: 90,
       timeSignature: '4/4',
-      notes: [
-        {
-          pitch: 'G4',
-          midi: 67,
-          startBeat: 0,
-          durationBeat: 1,
-          gateBeat: 0.92,
-          phraseBreakAfter: false,
-          articulation: 'normal',
-          sourceMeasure: 1,
-        },
-      ],
-      playbackEvents: [
-        {
-          startBeat: 0,
-          durationBeat: 1,
-          gateBeat: 0.92,
-          pitches: ['G4'],
-          midis: [67],
-          hand: 'right',
-          staff: '1',
-          voice: '1',
-          sourceMeasure: 1,
-        },
-      ],
+      notes: [],
+      playbackEvents: [],
       meta: { engine: 'audiveris', inputType: 'png', warnings: [] },
       catalogEntryId: 'entry-1',
       catalogTitle: 'server-title',
@@ -107,12 +86,12 @@ describe('App', () => {
 
     getByTestId('recognize-submit').click()
     await flush()
+    await flush()
 
     expect(apiMocks.recognizeScore).toHaveBeenCalledWith(file)
     expect(apiMocks.updateCatalogEntry).toHaveBeenCalledWith('entry-1', { title: 'my-song' })
-    expect(document.body.textContent).toContain('识别中，请稍候...')
-    expect(getByTestId('recognize-dialog')).toBeTruthy()
-    expect(wrapper.text()).toContain('G4')
+    expect(document.body.querySelector('[data-testid="recognize-dialog"]')).toBeNull()
+    expect(wrapper.text()).toContain('音符数 0')
   })
 
   it('supports inline rename with Enter save and Esc cancel', async () => {

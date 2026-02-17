@@ -96,12 +96,15 @@ function onConfirm() {
 
 <style scoped>
 .confirm-dialog {
-  position: relative;
-  z-index: 40;
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  isolation: isolate;
 
   .overlay {
     position: fixed;
     inset: 0;
+    z-index: 0;
     background: rgba(42, 31, 112, 0.38);
     backdrop-filter: blur(3px);
   }
@@ -109,6 +112,7 @@ function onConfirm() {
   .dialog-wrap {
     position: fixed;
     inset: 0;
+    z-index: 1;
     display: grid;
     place-items: center;
     padding: 18px;

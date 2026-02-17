@@ -84,7 +84,7 @@ def recognize_file(file_path: Path, input_type: str) -> RecognizeResponse:
                         result.meta.warnings.append(
                             f"Input was upscaled x{scale_factor:.1f} for OMR stability."
                         )
-                    result.meta.warnings.append(f"Run log: {run_dir}")
+                    # result.meta.warnings.append(f"Run log: {run_dir}")
 
                     _write_json(
                         run_dir / "result-summary.json",
