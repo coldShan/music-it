@@ -39,26 +39,36 @@ defineProps<{
 
 <style scoped>
 .table-wrap {
-  overflow-x: auto;
-  border: 1px solid #9c907f;
-  border-radius: 12px;
-  background: #fffdf8;
+  overflow: auto;
+  border: 1px solid #8d86cf;
+  border-radius: 14px;
+  background: #fff;
+  max-height: 460px;
 
   table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 14px;
+    font-size: 13px;
+    color: #29235f;
 
     th,
     td {
       text-align: left;
-      padding: 10px 12px;
-      border-bottom: 1px solid #e7dfd2;
+      padding: 10px;
+      border-bottom: 1px solid #e5e0fb;
     }
 
     thead th {
-      background: #efe7da;
-      font-weight: 600;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #f3efff;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    tbody tr:hover {
+      background: #faf8ff;
     }
   }
 }

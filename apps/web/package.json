@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@headlessui/vue": "^1.7.23",
     "@music-it/shared-types": "workspace:*",
     "soundfont-player": "^0.12.0",
     "tone": "^15.1.22",

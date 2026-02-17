@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/vue'
 import type {
   CatalogEntryDetail,
   CatalogEntrySummary,
@@ -11,8 +12,11 @@ import type {
 
 import { instrumentLabelMap, instrumentOptions } from './constants/instruments'
 import CatalogList from './components/CatalogList.vue'
+import ConfirmDialog from './components/ConfirmDialog.vue'
+import InstrumentListbox from './components/InstrumentListbox.vue'
+import PlaybackModeGroup from './components/PlaybackModeGroup.vue'
+import RecognizeDialog from './components/RecognizeDialog.vue'
 import ResultTable from './components/ResultTable.vue'
-import UploadField from './components/UploadField.vue'
 import {
   deleteCatalogEntry,
   getCatalogEntry,
@@ -24,10 +28,13 @@ import {
 import { filterPlaybackEvents, playScore, stopScore, type PlaybackMode } from './services/player'
 
 const selectedFile = ref<File | null>(null)
+const recognizeDialogOpen = ref(false)
+const confirmResetOpen = ref(false)
 const loading = ref(false)
 const errorMessage = ref('')
 const result = ref<RecognizeResponse | null>(null)
 const autoPlayMessage = ref('')
+const recognizeStatus = ref('')
 
 const catalogEntries = ref<CatalogEntrySummary[]>([])
 const catalogLoading = ref(false)
@@ -37,6 +44,25 @@ const instrumentSaving = ref(false)
 const playbackMode = ref<PlaybackMode>('both')
 const melodyInstrument = ref<InstrumentId>('piano')
 const leftHandInstrument = ref<InstrumentId>('piano')
+
+const editingCatalogId = ref<string | null>(null)
+const editingCatalogTitle = ref('')
+
+const sidebarDefaultOpen =
+  typeof window === 'undefined' || typeof window.matchMedia !== 'function'
+    ? true
+    : window.matchMedia('(min-width: 769px)').matches
+
+const activeCatalogEntry = computed(() => {
+  if (!activeCatalogId.value) {
+    return null
+  }
+  return catalogEntries.value.find((entry) => entry.id === activeCatalogId.value) ?? null
+})
+
+const activeTitle = computed(() => {
+  return activeCatalogEntry.value?.title ?? (result.value ? '当前识别结果' : '尚未加载曲目')
+})
 
 function fallbackPlaybackEventsFromNotes(scoreNotes: RecognizeResponse['notes']): PlaybackEvent[] {
   return scoreNotes.map((note) => ({
@@ -76,6 +102,15 @@ function toRecognizeResponse(response: RecognizeApiResponse): RecognizeResponse 
   }
 }
 
+function deriveTitleFromFile(file: File | null): string {
+  if (!file) {
+    return ''
+  }
+  const fileName = file.name.trim()
+  const stripped = fileName.replace(/\.[^/.]+$/, '').trim()
+  return stripped || fileName
+}
+
 function applyCatalogInstruments(melody: InstrumentId, left: InstrumentId) {
   melodyInstrument.value = melody
   leftHandInstrument.value = left
@@ -90,21 +125,6 @@ async function refreshCatalog() {
   } finally {
     catalogLoading.value = false
   }
-}
-
-async function promptRename(entryId: string, currentTitle: string) {
-  const input = window.prompt('识别成功，请输入曲目名称', currentTitle)
-  if (input === null) {
-    return
-  }
-
-  const title = input.trim()
-  if (!title || title === currentTitle) {
-    return
-  }
-
-  await updateCatalogEntry(entryId, { title })
-  await refreshCatalog()
 }
 
 async function playWithCurrentSettings(tempo: number, events: PlaybackEvent[]) {
@@ -128,24 +148,31 @@ async function playWithCurrentSettings(tempo: number, events: PlaybackEvent[]) {
 async function onRecognize() {
   if (!selectedFile.value) {
     errorMessage.value = '请先选择谱面文件。'
+    recognizeStatus.value = '请选择文件后再识别。'
     return
   }
 
   loading.value = true
   errorMessage.value = ''
   autoPlayMessage.value = ''
+  recognizeStatus.value = '识别中，请稍候...'
 
   try {
-    const response = await recognizeScore(selectedFile.value)
+    const file = selectedFile.value
+    const response = await recognizeScore(file)
     result.value = toRecognizeResponse(response)
     activeCatalogId.value = response.catalogEntryId
     applyCatalogInstruments(response.melodyInstrument, response.leftHandInstrument)
     await refreshCatalog()
 
-    try {
-      await promptRename(response.catalogEntryId, response.catalogTitle)
-    } catch {
-      errorMessage.value = '重命名失败，已保留默认标题。'
+    const preferredTitle = deriveTitleFromFile(file)
+    if (preferredTitle && preferredTitle !== response.catalogTitle) {
+      try {
+        await updateCatalogEntry(response.catalogEntryId, { title: preferredTitle })
+        await refreshCatalog()
+      } catch {
+        errorMessage.value = '默认曲目名更新失败，请手动重命名。'
+      }
     }
 
     const playbackEvents =
@@ -159,8 +186,11 @@ async function onRecognize() {
           error instanceof Error ? error.message : '浏览器阻止了自动播放，请点击“播放”按钮。'
       }
     }
+
+    recognizeStatus.value = '识别完成，可继续替换文件重新识别。'
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '识别失败'
+    recognizeStatus.value = '识别失败，请检查文件后重试。'
     result.value = null
   } finally {
     loading.value = false
@@ -209,11 +239,11 @@ async function onDeleteFromCatalog(entryId: string) {
   }
 }
 
-async function onResetCatalog() {
-  if (!window.confirm('将清空已识别目录和缓存文件，是否继续？')) {
-    return
-  }
+function onRequestResetCatalog() {
+  confirmResetOpen.value = true
+}
 
+async function onConfirmResetCatalog() {
   resetLoading.value = true
   errorMessage.value = ''
 
@@ -222,6 +252,7 @@ async function onResetCatalog() {
     stopScore()
     result.value = null
     activeCatalogId.value = null
+    confirmResetOpen.value = false
     await refreshCatalog()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '目录重置失败'
@@ -265,6 +296,35 @@ function onStop() {
   stopScore()
 }
 
+function onStartRename(entryId: string, currentTitle: string) {
+  editingCatalogId.value = entryId
+  editingCatalogTitle.value = currentTitle
+}
+
+function onCancelRename() {
+  editingCatalogId.value = null
+  editingCatalogTitle.value = ''
+}
+
+async function onCommitRename(entryId: string, title: string) {
+  const nextTitle = title.trim()
+  const currentTitle = catalogEntries.value.find((entry) => entry.id === entryId)?.title ?? ''
+
+  if (!nextTitle || nextTitle === currentTitle) {
+    onCancelRename()
+    return
+  }
+
+  try {
+    await updateCatalogEntry(entryId, { title: nextTitle })
+    await refreshCatalog()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '重命名失败'
+  } finally {
+    onCancelRename()
+  }
+}
+
 onMounted(() => {
   void refreshCatalog()
 })
@@ -272,175 +332,329 @@ onMounted(() => {
 
 <template>
   <main class="screen">
-    <section class="panel">
-      <header>
-        <p class="kicker">Music It MVP</p>
-        <h1>五线谱识别自动弹奏</h1>
-        <p class="description">上传清晰谱面图片或 PDF，识别后立即以钢琴音色播放。</p>
-      </header>
+    <section class="hero">
+      <p class="kicker">Music It Stage</p>
+      <h1>乐谱识别与自动回放台</h1>
+      <p class="description">主区专注当前曲目与播放控制，目录与识别细节在两侧协同展示。</p>
+      <button data-testid="open-recognize-dialog" type="button" class="open-dialog" @click="recognizeDialogOpen = true">
+        上传并识别
+      </button>
+    </section>
 
-      <form class="controls" @submit.prevent="onRecognize">
-        <UploadField v-model:file="selectedFile" />
-        <button type="submit" :disabled="loading">
-          {{ loading ? '识别中...' : '识别并自动弹奏' }}
-        </button>
-      </form>
-
-      <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
-      <p v-if="autoPlayMessage" class="hint">{{ autoPlayMessage }}</p>
-
-      <CatalogList
-        :entries="catalogEntries"
-        :loading="catalogLoading"
-        :active-id="activeCatalogId"
-        :instrument-label-map="instrumentLabelMap"
-        @play="onPlayFromCatalog"
-        @delete="onDeleteFromCatalog"
-      />
-
-      <div class="catalog-tools">
-        <button
-          type="button"
-          class="danger"
-          :disabled="catalogLoading || resetLoading"
-          data-testid="catalog-reset"
-          @click="onResetCatalog"
-        >
-          {{ resetLoading ? '重置中...' : '清空旧目录（重置）' }}
-        </button>
-      </div>
-
-      <section v-if="result" class="result">
-        <div class="meta">
-          <p>Tempo: {{ result.tempo }} BPM</p>
-          <p>拍号: {{ result.timeSignature }}</p>
-          <p>音符数: {{ result.notes.length }}</p>
-          <p>播放事件数: {{ resolvedPlaybackEvents.length }}</p>
+    <section class="layout">
+      <Disclosure as="aside" class="catalog-sidebar" :default-open="sidebarDefaultOpen" v-slot="{ open }">
+        <div class="sidebar-head">
+          <h2>历史目录</h2>
+          <DisclosureButton data-testid="catalog-toggle" class="toggle">
+            {{ open ? '收起目录' : '展开目录' }}
+          </DisclosureButton>
         </div>
 
-        <div class="actions">
-          <div class="mode-switch">
-            <label for="playback-mode">播放声部</label>
-            <select id="playback-mode" v-model="playbackMode">
-              <option value="both">双手</option>
-              <option value="right">只右手</option>
-              <option value="left">只左手</option>
-            </select>
-          </div>
-          <div class="mode-switch">
-            <label for="melody-instrument">主旋律音色</label>
-            <select
-              id="melody-instrument"
-              :value="melodyInstrument"
-              :disabled="instrumentSaving"
-              @change="onInstrumentChange('melody', ($event.target as HTMLSelectElement).value as InstrumentId)"
-            >
-              <option
-                v-for="option in instrumentOptions"
-                :key="`melody-${option.value}`"
-                :value="option.value"
-              >
-                {{ option.label }}
-              </option>
-            </select>
-          </div>
-          <div class="mode-switch">
-            <label for="left-instrument">左手音色</label>
-            <select
-              id="left-instrument"
-              :value="leftHandInstrument"
-              :disabled="instrumentSaving"
-              @change="onInstrumentChange('left', ($event.target as HTMLSelectElement).value as InstrumentId)"
-            >
-              <option
-                v-for="option in instrumentOptions"
-                :key="`left-${option.value}`"
-                :value="option.value"
-              >
-                {{ option.label }}
-              </option>
-            </select>
-          </div>
-          <button type="button" @click="onPlay" :disabled="!canPlay">播放</button>
-          <button type="button" class="secondary" @click="onStop">停止</button>
+        <DisclosurePanel class="sidebar-panel">
+          <CatalogList
+            :entries="catalogEntries"
+            :loading="catalogLoading"
+            :active-id="activeCatalogId"
+            :instrument-label-map="instrumentLabelMap"
+            :editing-id="editingCatalogId"
+            :editing-title="editingCatalogTitle"
+            @play="onPlayFromCatalog"
+            @delete="onDeleteFromCatalog"
+            @start-rename="onStartRename"
+            @update-editing-title="editingCatalogTitle = $event"
+            @commit-rename="onCommitRename"
+            @cancel-rename="onCancelRename"
+          />
+
+          <button
+            type="button"
+            class="reset-catalog"
+            :disabled="catalogLoading || resetLoading"
+            data-testid="catalog-reset"
+            @click="onRequestResetCatalog"
+          >
+            {{ resetLoading ? '重置中...' : '清空目录' }}
+          </button>
+        </DisclosurePanel>
+      </Disclosure>
+
+      <section class="primary">
+        <article class="current">
+          <p class="label">当前播放曲目</p>
+          <h2>{{ activeTitle }}</h2>
+          <p class="status" v-if="result">Tempo {{ result.tempo }} BPM · 拍号 {{ result.timeSignature }}</p>
+          <p class="status" v-else>尚未开始识别</p>
+        </article>
+
+        <PlaybackModeGroup v-model="playbackMode" />
+
+        <div class="instrument-grid">
+          <InstrumentListbox
+            test-id-prefix="melody-instrument"
+            label="主旋律音色"
+            :model-value="melodyInstrument"
+            :options="instrumentOptions"
+            :disabled="instrumentSaving"
+            @update:model-value="onInstrumentChange('melody', $event)"
+          />
+          <InstrumentListbox
+            test-id-prefix="left-instrument"
+            label="左手音色"
+            :model-value="leftHandInstrument"
+            :options="instrumentOptions"
+            :disabled="instrumentSaving"
+            @update:model-value="onInstrumentChange('left', $event)"
+          />
+        </div>
+
+        <div class="player-actions">
+          <button data-testid="main-play" type="button" class="play" :disabled="!canPlay" @click="onPlay">播放</button>
+          <button data-testid="main-stop" type="button" class="stop" @click="onStop">停止</button>
         </div>
 
         <p class="hint">
           当前音色：旋律 {{ melodyInstrumentLabel }}，左手 {{ leftHandInstrumentLabel }}（切换后下次播放生效）
         </p>
 
-        <ul v-if="result.meta.warnings.length" class="warnings">
-          <li v-for="warning in result.meta.warnings" :key="warning">{{ warning }}</li>
-        </ul>
-
-        <ResultTable :notes="result.notes" />
+        <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
+        <p v-if="autoPlayMessage" class="hint">{{ autoPlayMessage }}</p>
       </section>
+
+      <aside class="details">
+        <h2>识别详情</h2>
+
+        <template v-if="result">
+          <div class="meta">
+            <p>音符数 {{ result.notes.length }}</p>
+            <p>播放事件 {{ resolvedPlaybackEvents.length }}</p>
+            <p>引擎 {{ result.meta.engine }}</p>
+          </div>
+
+          <ul v-if="result.meta.warnings.length" class="warnings">
+            <li v-for="warning in result.meta.warnings" :key="warning">{{ warning }}</li>
+          </ul>
+
+          <ResultTable :notes="result.notes" />
+        </template>
+
+        <p v-else class="empty">上传并识别后，这里会显示结构化音符明细。</p>
+      </aside>
     </section>
+
+    <RecognizeDialog
+      v-model:open="recognizeDialogOpen"
+      v-model:file="selectedFile"
+      :loading="loading"
+      :error-message="errorMessage"
+      :status-message="recognizeStatus"
+      @submit="onRecognize"
+    />
+
+    <ConfirmDialog
+      v-model:open="confirmResetOpen"
+      title="确认清空目录"
+      description="将删除所有已识别曲目与缓存文件，该操作不可恢复。"
+      :loading="resetLoading"
+      confirm-text="确认清空"
+      @confirm="onConfirmResetCatalog"
+    />
   </main>
 </template>
 
 <style scoped>
+:global(*) {
+  box-sizing: border-box;
+}
+
 :global(body) {
   margin: 0;
-  font-family: 'IBM Plex Sans', sans-serif;
-  color: #111;
+  font-family: 'Noto Sans SC', 'PingFang SC', sans-serif;
+  color: #17143f;
 }
 
 .screen {
+  --stage-bg: #f7f4ff;
+  --panel-bg: #ffffff;
+  --panel-border: #8d86cf;
+  --primary-ink: #1e1a57;
+  --sub-ink: #605a98;
+  --accent: linear-gradient(130deg, #29237f, #de429f);
+  --accent-soft: #ece7ff;
+
   min-height: 100vh;
-  padding: 28px;
+  padding: 22px;
   background:
-    radial-gradient(circle at 20% 20%, rgba(255, 226, 173, 0.28), transparent 45%),
-    linear-gradient(145deg, #f6f1e6, #ddd3c2 60%, #d2c3ac);
+    radial-gradient(circle at 14% 16%, rgba(47, 185, 255, 0.18), transparent 30%),
+    radial-gradient(circle at 83% 9%, rgba(247, 95, 192, 0.18), transparent 34%),
+    linear-gradient(165deg, #f8f6ff, #f3f1ff 52%, #eff4ff);
   display: grid;
-  place-items: center;
+  gap: 18px;
+}
 
-  .panel {
-    width: min(900px, 100%);
-    border-radius: 18px;
-    padding: 26px;
-    background: rgba(255, 252, 244, 0.9);
-    border: 1px solid #9f9079;
-    box-shadow: 0 12px 40px rgba(53, 33, 8, 0.16);
-    animation: rise 420ms ease-out;
+.hero {
+  border: 1px solid var(--panel-border);
+  border-radius: 22px;
+  padding: 18px 20px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 16px 30px rgba(45, 34, 127, 0.14);
+  animation: appear 440ms ease-out;
+  display: grid;
+  gap: 8px;
+
+  .kicker {
+    margin: 0;
+    color: #726ab0;
+    letter-spacing: 0.14em;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  h1 {
+    margin: 0;
+    color: var(--primary-ink);
+    font: 700 38px/1.06 'Noto Serif SC', serif;
+  }
+
+  .description {
+    margin: 0;
+    color: var(--sub-ink);
+    max-width: 720px;
+  }
+
+  .open-dialog {
+    justify-self: start;
+    border: 0;
+    border-radius: 12px;
+    padding: 11px 16px;
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+    font-weight: 700;
+    transition: transform 0.2s ease;
+
+    &:hover {
+      transform: translateY(-1px);
+    }
+  }
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(360px, 1fr) minmax(300px, 420px);
+  gap: 14px;
+  align-items: start;
+}
+
+.catalog-sidebar,
+.primary,
+.details {
+  border: 1px solid var(--panel-border);
+  border-radius: 20px;
+  background: var(--panel-bg);
+  box-shadow: 0 16px 30px rgba(45, 34, 127, 0.12);
+}
+
+.catalog-sidebar {
+  padding: 12px;
+  display: grid;
+  gap: 12px;
+
+  .sidebar-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+
+    h2 {
+      margin: 0;
+      color: var(--primary-ink);
+      font: 700 23px/1.15 'Noto Serif SC', serif;
+    }
+
+    .toggle {
+      border: 1px solid #8b83cd;
+      border-radius: 999px;
+      padding: 7px 12px;
+      background: var(--accent-soft);
+      color: #322c6e;
+      cursor: pointer;
+      font-weight: 600;
+    }
+  }
+
+  .sidebar-panel {
     display: grid;
-    gap: 16px;
+    gap: 12px;
+  }
 
-    header {
-      margin-bottom: 2px;
+  .reset-catalog {
+    border: 0;
+    border-radius: 10px;
+    padding: 10px;
+    background: #ffe8f4;
+    color: #8f205d;
+    cursor: pointer;
+    font-weight: 700;
 
-      .kicker {
-        margin: 0;
-        font: 600 14px/1.2 'IBM Plex Sans', sans-serif;
-        letter-spacing: 0.14em;
-        color: #69583f;
-      }
+    &:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+  }
+}
 
-      h1 {
-        margin: 8px 0;
-        font: 600 44px/1.05 'Cormorant Garamond', serif;
-      }
+.primary {
+  padding: 16px;
+  display: grid;
+  gap: 14px;
 
-      .description {
-        margin: 0;
-        color: #4d453d;
-      }
+  .current {
+    border: 1px solid #8f87d2;
+    border-radius: 16px;
+    background: linear-gradient(135deg, #2d277f, #df46a2);
+    color: #fff;
+    padding: 14px;
+    display: grid;
+    gap: 6px;
+
+    .label {
+      margin: 0;
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #e7ddff;
     }
 
-    .controls {
-      display: grid;
-      gap: 14px;
-      margin-bottom: 2px;
+    h2 {
+      margin: 0;
+      font: 700 28px/1.15 'Noto Serif SC', serif;
+      word-break: break-word;
     }
+
+    .status {
+      margin: 0;
+      color: #f2edff;
+      font-weight: 500;
+    }
+  }
+
+  .instrument-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .player-actions {
+    display: flex;
+    gap: 10px;
 
     button {
       border: 0;
       border-radius: 12px;
-      padding: 12px 16px;
-      background: #142139;
-      color: #f7f4ec;
+      padding: 11px 16px;
       cursor: pointer;
-      font-weight: 600;
+      font-weight: 700;
       transition: transform 0.2s ease, opacity 0.2s ease;
 
       &:hover:not(:disabled) {
@@ -448,83 +662,82 @@ onMounted(() => {
       }
 
       &:disabled {
-        opacity: 0.5;
+        opacity: 0.55;
         cursor: not-allowed;
       }
-
-      &.secondary {
-        background: #8a7f72;
-      }
     }
 
-    .error {
-      color: #7f1f1f;
-      margin: 0;
+    .play {
+      background: var(--accent);
+      color: #fff;
+      flex: 1;
     }
 
-    .hint {
-      color: #5d503f;
-      margin: 0;
+    .stop {
+      background: #ede9ff;
+      color: #2b256f;
     }
+  }
 
-    .catalog-tools {
-      display: flex;
-      justify-content: flex-end;
+  .hint {
+    margin: 0;
+    color: #5e5898;
+    font-size: 14px;
+  }
 
-      .danger {
-        background: #7f2b2b;
-      }
-    }
-
-    .result {
-      display: grid;
-      gap: 14px;
-
-      .meta {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 14px;
-        color: #3b352d;
-      }
-
-      .actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-
-        .mode-switch {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-
-          label {
-            color: #3b352d;
-            font-size: 14px;
-          }
-
-          select {
-            border: 1px solid #b8aa96;
-            border-radius: 8px;
-            padding: 8px 10px;
-            background: #fff8ec;
-            color: #1f1b15;
-          }
-        }
-      }
-
-      .warnings {
-        margin: 0;
-        padding-left: 18px;
-        color: #4e402f;
-      }
-    }
+  .error {
+    margin: 0;
+    color: #8f1f5f;
+    font-weight: 700;
   }
 }
 
-@keyframes rise {
+.details {
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+
+  h2 {
+    margin: 0;
+    color: var(--primary-ink);
+    font: 700 24px/1.15 'Noto Serif SC', serif;
+  }
+
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+
+    p {
+      margin: 0;
+      border-radius: 999px;
+      border: 1px solid #8f88d0;
+      background: #f4f0ff;
+      color: #2f2873;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+  }
+
+  .warnings {
+    margin: 0;
+    padding-left: 18px;
+    color: #6e2353;
+    display: grid;
+    gap: 4px;
+  }
+
+  .empty {
+    margin: 0;
+    color: var(--sub-ink);
+  }
+}
+
+@keyframes appear {
   from {
     opacity: 0;
-    transform: translateY(14px);
+    transform: translateY(10px);
   }
   to {
     opacity: 1;
@@ -532,16 +745,38 @@ onMounted(() => {
   }
 }
 
+@media (max-width: 1180px) {
+  .layout {
+    grid-template-columns: minmax(230px, 280px) minmax(0, 1fr);
+  }
+
+  .details {
+    grid-column: span 2;
+  }
+}
+
 @media (max-width: 768px) {
   .screen {
-    padding: 16px;
+    padding: 14px;
+  }
 
-    .panel {
-      padding: 18px;
+  .hero {
+    h1 {
+      font-size: 30px;
+    }
+  }
 
-      header h1 {
-        font-size: 34px;
-      }
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .details {
+    grid-column: auto;
+  }
+
+  .primary {
+    .instrument-grid {
+      grid-template-columns: 1fr;
     }
   }
 }
