@@ -27,7 +27,7 @@ import {
 } from './services/api'
 import { filterPlaybackEvents, playScore, stopScore, type PlaybackMode } from './services/player'
 
-const selectedFile = ref<File | null>(null)
+const selectedFiles = ref<File[]>([])
 const recognizeDialogOpen = ref(false)
 const confirmResetOpen = ref(false)
 const loading = ref(false)
@@ -42,8 +42,8 @@ const activeCatalogId = ref<string | null>(null)
 const resetLoading = ref(false)
 const instrumentSaving = ref(false)
 const playbackMode = ref<PlaybackMode>('both')
-const melodyInstrument = ref<InstrumentId>('piano')
-const leftHandInstrument = ref<InstrumentId>('piano')
+const melodyInstrument = ref<InstrumentId>('toneSynth')
+const leftHandInstrument = ref<InstrumentId>('toneSynth')
 
 const editingCatalogId = ref<string | null>(null)
 const editingCatalogTitle = ref('')
@@ -107,7 +107,7 @@ function toRecognizeResponse(response: RecognizeApiResponse): RecognizeResponse 
   }
 }
 
-function deriveTitleFromFile(file: File | null): string {
+function deriveTitleFromFile(file: File | undefined): string {
   if (!file) {
     return ''
   }
@@ -151,7 +151,7 @@ async function playWithCurrentSettings(tempo: number, events: PlaybackEvent[]) {
 }
 
 async function onRecognize() {
-  if (!selectedFile.value) {
+  if (!selectedFiles.value.length) {
     errorMessage.value = '请先选择谱面文件。'
     recognizeStatus.value = '请选择文件后再识别。'
     return
@@ -163,14 +163,14 @@ async function onRecognize() {
   recognizeStatus.value = '识别中，请稍候...'
 
   try {
-    const file = selectedFile.value
-    const response = await recognizeScore(file)
+    const files = selectedFiles.value
+    const response = await recognizeScore(files)
     result.value = toRecognizeResponse(response)
     activeCatalogId.value = response.catalogEntryId
     applyCatalogInstruments(response.melodyInstrument, response.leftHandInstrument)
     await refreshCatalog()
 
-    const preferredTitle = deriveTitleFromFile(file)
+    const preferredTitle = deriveTitleFromFile(files[0])
     if (preferredTitle && preferredTitle !== response.catalogTitle) {
       try {
         await updateCatalogEntry(response.catalogEntryId, { title: preferredTitle })
@@ -194,7 +194,7 @@ async function onRecognize() {
 
     recognizeDialogOpen.value = false
     recognizeStatus.value = ''
-    selectedFile.value = null
+    selectedFiles.value = []
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '识别失败'
     recognizeStatus.value = '识别失败，请检查文件后重试。'
@@ -451,7 +451,7 @@ onMounted(() => {
     <RecognizeDialog
       v-if="recognizeDialogOpen"
       v-model:open="recognizeDialogOpen"
-      v-model:file="selectedFile"
+      v-model:files="selectedFiles"
       :loading="loading"
       :error-message="errorMessage"
       :status-message="recognizeStatus"

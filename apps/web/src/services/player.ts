@@ -12,7 +12,9 @@ type PlaybackOptions = {
 }
 
 let part: Tone.Part | null = null
-const instrumentCache = new Map<InstrumentId, Promise<Soundfont.Player>>()
+let toneSynth: Tone.PolySynth | null = null
+type SoundfontInstrumentId = Exclude<InstrumentId, 'toneSynth'>
+const instrumentCache = new Map<SoundfontInstrumentId, Promise<Soundfont.Player>>()
 
 export const SOUND_FONT_PROGRAMS = {
   piano: 'acoustic_grand_piano',
@@ -22,7 +24,12 @@ export const SOUND_FONT_PROGRAMS = {
   trumpet: 'trumpet',
   saxophone: 'alto_sax',
   flute: 'flute',
-} as const satisfies Record<InstrumentId, Parameters<typeof Soundfont.instrument>[1]>
+  eightBit: 'lead_1_square',
+} as const satisfies Record<SoundfontInstrumentId, Parameters<typeof Soundfont.instrument>[1]>
+
+export function isToneSynthInstrument(instrumentId: InstrumentId): instrumentId is 'toneSynth' {
+  return instrumentId === 'toneSynth'
+}
 
 export function filterPlaybackEvents(
   events: PlaybackEvent[],
@@ -34,7 +41,7 @@ export function filterPlaybackEvents(
   return events.filter((event) => event.hand === mode)
 }
 
-async function loadInstrument(instrumentId: InstrumentId): Promise<Soundfont.Player> {
+async function loadInstrument(instrumentId: SoundfontInstrumentId): Promise<Soundfont.Player> {
   const cached = instrumentCache.get(instrumentId)
   if (cached) {
     return cached
@@ -56,8 +63,8 @@ async function loadInstrument(instrumentId: InstrumentId): Promise<Soundfont.Pla
 }
 
 export async function loadInstrumentWithFallback(
-  instrumentId: InstrumentId,
-  loader: (value: InstrumentId) => Promise<Soundfont.Player> = loadInstrument,
+  instrumentId: SoundfontInstrumentId,
+  loader: (value: SoundfontInstrumentId) => Promise<Soundfont.Player> = loadInstrument,
 ): Promise<{ player: Soundfont.Player; resolved: InstrumentId; warning?: string }> {
   try {
     const player = await loader(instrumentId)
@@ -104,6 +111,15 @@ export async function playScore(options: PlaybackOptions): Promise<string[]> {
   )
 
   for (const instrumentId of required) {
+    if (isToneSynthInstrument(instrumentId)) {
+      toneSynth ??= new Tone.PolySynth(Tone.Synth, {
+        oscillator: { type: 'triangle8' },
+        envelope: { attack: 0.01, decay: 0.3, sustain: 0.2, release: 0.8 },
+        volume: -8,
+      }).toDestination()
+      continue
+    }
+
     const loaded = await loadInstrumentWithFallback(instrumentId)
     players.set(instrumentId, loaded.player)
     if (loaded.warning) {
@@ -120,6 +136,11 @@ export async function playScore(options: PlaybackOptions): Promise<string[]> {
 
   part = new Tone.Part((time, event) => {
     const selected = resolveHandInstrument(event.hand, melodyInstrument, leftHandInstrument)
+    if (isToneSynthInstrument(selected)) {
+      toneSynth?.triggerAttackRelease(event.pitches, event.durationSeconds, time)
+      return
+    }
+
     const player = players.get(selected) ?? players.get('piano')
     if (!player) {
       return
@@ -144,6 +165,7 @@ export function stopScore(): void {
     part.dispose()
     part = null
   }
+  toneSynth?.releaseAll()
   Tone.getTransport().stop()
   Tone.getTransport().cancel(0)
 }

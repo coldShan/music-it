@@ -1,8 +1,14 @@
 from pydantic import BaseModel, Field
 from typing import Literal
 
-InstrumentId = Literal["piano", "guitar", "musicBox", "violin", "trumpet", "saxophone", "flute"]
-SUPPORTED_INSTRUMENTS = ("piano", "guitar", "musicBox", "violin", "trumpet", "saxophone", "flute")
+InstrumentId = Literal[
+    "piano", "guitar", "musicBox", "violin", "trumpet", "saxophone", "flute", "eightBit",
+    "toneSynth"
+]
+SUPPORTED_INSTRUMENTS = (
+    "piano", "guitar", "musicBox", "violin", "trumpet", "saxophone", "flute", "eightBit",
+    "toneSynth"
+)
 
 
 class RecognizedNote(BaseModel):

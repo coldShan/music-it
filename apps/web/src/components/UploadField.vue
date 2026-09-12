@@ -1,11 +1,18 @@
 <script setup lang="ts">
-const fileModel = defineModel<File | null>('file', {
-  default: null,
+const filesModel = defineModel<File[]>('files', {
+  default: () => [],
+})
+
+const filenameCollator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: 'base',
 })
 
 function onChange(event: Event) {
   const input = event.target as HTMLInputElement
-  fileModel.value = input.files?.[0] ?? null
+  filesModel.value = Array.from(input.files ?? []).sort((left, right) =>
+    filenameCollator.compare(left.name, right.name),
+  )
 }
 </script>
 
@@ -16,10 +23,15 @@ function onChange(event: Event) {
       data-testid="recognize-file-input"
       type="file"
       accept=".png,.jpg,.jpeg,.pdf"
+      multiple
       @change="onChange"
     />
-    <span class="upload-hint">支持 PNG / JPG / PDF（第一页）</span>
-    <span v-if="fileModel" class="upload-file">已选择：{{ fileModel.name }}</span>
+    <span class="upload-hint">支持多选 PNG / JPG / PDF（PDF 仅第一页），按文件名顺序识别</span>
+    <ol v-if="filesModel.length" class="upload-files">
+      <li v-for="file in filesModel" :key="`${file.name}-${file.size}-${file.lastModified}`">
+        {{ file.name }}
+      </li>
+    </ol>
   </label>
 </template>
 
@@ -57,7 +69,9 @@ function onChange(event: Event) {
     font-size: 13px;
   }
 
-  .upload-file {
+  .upload-files {
+    margin: 0;
+    padding-left: 22px;
     color: #25216b;
     font-size: 13px;
     font-weight: 600;

@@ -8,6 +8,8 @@ export const instrumentOptions: Array<{ value: InstrumentId; label: string }> = 
   { value: 'trumpet', label: '小号' },
   { value: 'saxophone', label: '萨克斯' },
   { value: 'flute', label: '笛子' },
+  { value: 'eightBit', label: '8-bit' },
+  { value: 'toneSynth', label: 'Tone 合成器' },
 ]
 
 export const instrumentLabelMap: Record<InstrumentId, string> = Object.fromEntries(

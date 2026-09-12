@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { InstrumentId } from '@music-it/shared-types'
 
-import { filterPlaybackEvents, loadInstrumentWithFallback, resolveHandInstrument } from './player'
+import {
+  filterPlaybackEvents,
+  isToneSynthInstrument,
+  loadInstrumentWithFallback,
+  resolveHandInstrument,
+  SOUND_FONT_PROGRAMS,
+} from './player'
 
 const sampleEvents = [
   {
@@ -53,6 +59,19 @@ describe('resolveHandInstrument', () => {
 
   it('routes left hand to left-hand instrument', () => {
     expect(resolveHandInstrument('left', 'violin', 'guitar')).toBe('guitar')
+  })
+})
+
+describe('SOUND_FONT_PROGRAMS', () => {
+  it('maps the 8-bit option to a square-wave lead', () => {
+    expect(SOUND_FONT_PROGRAMS.eightBit).toBe('lead_1_square')
+  })
+})
+
+describe('isToneSynthInstrument', () => {
+  it('keeps the built-in synth out of the SoundFont loading path', () => {
+    expect(isToneSynthInstrument('toneSynth')).toBe(true)
+    expect(isToneSynthInstrument('eightBit')).toBe(false)
   })
 })
 

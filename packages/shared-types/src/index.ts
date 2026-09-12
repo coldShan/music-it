@@ -6,6 +6,8 @@ export type InstrumentId =
   | 'trumpet'
   | 'saxophone'
   | 'flute'
+  | 'eightBit'
+  | 'toneSynth'
 
 export type RecognizedNote = {
   pitch: string

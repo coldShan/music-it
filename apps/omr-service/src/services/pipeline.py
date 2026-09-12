@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 import traceback
 from uuid import uuid4
 
-from src.models import RecognizeResponse
+from src.models import RecognizeResponse, ResponseMeta
 from src.services.audiveris import AudiverisRunner
 from src.services.errors import OMRPipelineError
 from src.services.musicxml_parser import parse_musicxml
@@ -33,6 +33,54 @@ def _new_run_dir() -> Path:
 
 def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def merge_recognize_results(results: list[RecognizeResponse]) -> RecognizeResponse:
+    if not results:
+        raise ValueError("At least one recognition result is required")
+    if len(results) == 1:
+        return results[0]
+
+    notes = []
+    playback_events = []
+    warnings = []
+    beat_offset = 0.0
+    measure_offset = 0
+
+    for result in results:
+        notes.extend(
+            note.model_copy(
+                update={
+                    "startBeat": round(note.startBeat + beat_offset, 4),
+                    "sourceMeasure": note.sourceMeasure + measure_offset,
+                }
+            )
+            for note in result.notes
+        )
+        playback_events.extend(
+            event.model_copy(
+                update={
+                    "startBeat": round(event.startBeat + beat_offset, 4),
+                    "sourceMeasure": event.sourceMeasure + measure_offset,
+                }
+            )
+            for event in result.playbackEvents
+        )
+        warnings.extend(result.meta.warnings)
+
+        page_items = [*result.notes, *result.playbackEvents]
+        if page_items:
+            beat_offset += max(item.startBeat + item.durationBeat for item in page_items)
+            measure_offset += max(item.sourceMeasure for item in page_items)
+
+    warnings.append(f"Merged {len(results)} files in filename order.")
+    return RecognizeResponse(
+        tempo=results[0].tempo,
+        timeSignature=results[0].timeSignature,
+        notes=notes,
+        playbackEvents=playback_events,
+        meta=ResponseMeta(engine="audiveris", inputType="multi-image", warnings=warnings),
+    )
 
 
 def recognize_file(file_path: Path, input_type: str) -> RecognizeResponse:

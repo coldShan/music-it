@@ -58,7 +58,7 @@ describe('App', () => {
     document.body.innerHTML = ''
   })
 
-  it('recognizes score via dialog and syncs default title from filename', async () => {
+  it('recognizes selected files in filename order and syncs the title from the first page', async () => {
     apiMocks.recognizeScore.mockResolvedValue({
       tempo: 90,
       timeSignature: '4/4',
@@ -78,9 +78,10 @@ describe('App', () => {
     await wrapper.get('[data-testid="open-recognize-dialog"]').trigger('click')
     await flush()
 
-    const file = new File(['score'], 'my-song.png', { type: 'image/png' })
+    const page10 = new File(['page-10'], 'my-song-10.png', { type: 'image/png' })
+    const page2 = new File(['page-2'], 'my-song-2.png', { type: 'image/png' })
     const input = getByTestId('recognize-file-input') as HTMLInputElement
-    Object.defineProperty(input, 'files', { value: [file], configurable: true })
+    Object.defineProperty(input, 'files', { value: [page10, page2], configurable: true })
     input.dispatchEvent(new Event('change'))
     await flush()
 
@@ -88,8 +89,8 @@ describe('App', () => {
     await flush()
     await flush()
 
-    expect(apiMocks.recognizeScore).toHaveBeenCalledWith(file)
-    expect(apiMocks.updateCatalogEntry).toHaveBeenCalledWith('entry-1', { title: 'my-song' })
+    expect(apiMocks.recognizeScore).toHaveBeenCalledWith([page2, page10])
+    expect(apiMocks.updateCatalogEntry).toHaveBeenCalledWith('entry-1', { title: 'my-song-2' })
     expect(document.body.querySelector('[data-testid="recognize-dialog"]')).toBeNull()
     expect(wrapper.text()).toContain('音符数 0')
   })
@@ -143,6 +144,9 @@ describe('App', () => {
   it('opens confirm dialog before resetting catalog', async () => {
     const wrapper = mount(App, { attachTo: document.body })
     await flush()
+
+    expect(getByTestId('melody-instrument-button').textContent).toContain('Tone 合成器')
+    expect(getByTestId('left-instrument-button').textContent).toContain('Tone 合成器')
 
     await wrapper.get('[data-testid="catalog-reset"]').trigger('click')
     await flush()
@@ -236,11 +240,11 @@ describe('App', () => {
 
     getByTestId('melody-instrument-button').click()
     await flush()
-    getByTestId('melody-instrument-option-violin').click()
+    getByTestId('melody-instrument-option-toneSynth').click()
     await flush()
 
     expect(apiMocks.updateCatalogEntry).toHaveBeenCalledWith('entry-2', {
-      melodyInstrument: 'violin',
+      melodyInstrument: 'toneSynth',
       leftHandInstrument: 'piano',
     })
   })

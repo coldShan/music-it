@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
-from tempfile import NamedTemporaryFile
+import re
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -20,7 +22,7 @@ from src.services.catalog_service import (
     CatalogValidationError,
 )
 from src.services.errors import OMRPipelineError
-from src.services.pipeline import recognize_file
+from src.services.pipeline import merge_recognize_results, recognize_file
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "pdf"}
 
@@ -103,15 +105,16 @@ def reset_catalog(confirm: str) -> dict[str, Any]:
 
 
 @app.post("/api/v1/recognize", response_model=RecognizeApiResponse)
-async def recognize(file: UploadFile = File(...)):
-    suffix = Path(file.filename or "").suffix.lower().lstrip(".")
-    if suffix not in ALLOWED_EXTENSIONS:
+async def recognize(file: list[UploadFile] = File(...)):
+    uploads = sorted(file, key=lambda item: _filename_sort_key(item.filename or ""))
+    suffixes = [Path(item.filename or "").suffix.lower().lstrip(".") for item in uploads]
+    if not uploads or any(suffix not in ALLOWED_EXTENSIONS for suffix in suffixes):
         raise HTTPException(status_code=400, detail="Only PNG/JPG/JPEG/PDF are supported")
 
     service = CatalogService()
 
-    content = await file.read()
-    image_hash = service.compute_hash(content)
+    contents = [await item.read() for item in uploads]
+    image_hash = _files_hash(contents, service)
     existing_entry = service.find_by_hash(image_hash)
     if existing_entry is not None:
         try:
@@ -130,16 +133,20 @@ async def recognize(file: UploadFile = File(...)):
         except CatalogStorageError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    with NamedTemporaryFile(suffix=f".{suffix}", delete=True) as temp:
-        temp.write(content)
-        temp.flush()
-
+    with TemporaryDirectory(prefix="omr-upload-") as temp_dir:
         try:
-            result = recognize_file(Path(temp.name), suffix)
+            temp = Path(temp_dir)
+            page_results = []
+            for index, (content, suffix) in enumerate(zip(contents, suffixes, strict=True)):
+                page_path = temp / f"{index:04d}.{suffix}"
+                page_path.write_bytes(content)
+                page_results.append(recognize_file(page_path, suffix))
+            result = merge_recognize_results(page_results)
+            first_upload = uploads[0]
             entry = service.create_entry(
-                content=content,
-                original_filename=file.filename or f"score.{suffix}",
-                input_type=suffix,
+                content=contents[0],
+                original_filename=first_upload.filename or f"score.{suffixes[0]}",
+                input_type=result.meta.inputType,
                 result=result,
                 image_hash=image_hash,
             )
@@ -159,3 +166,21 @@ async def recognize(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # pragma: no cover
             raise HTTPException(status_code=500, detail=f"Unexpected error: {exc}") from exc
+
+
+def _filename_sort_key(filename: str) -> tuple[tuple[int, int | str], ...]:
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part.casefold())
+        for part in re.split(r"(\d+)", filename)
+    )
+
+
+def _files_hash(contents: list[bytes], service: CatalogService) -> str:
+    if len(contents) == 1:
+        return service.compute_hash(contents[0])
+
+    digest = hashlib.sha256()
+    for content in contents:
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()

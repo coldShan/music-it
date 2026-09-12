@@ -16,9 +16,11 @@ async function parseJsonOrThrow(response: Response) {
   return response.json()
 }
 
-export async function recognizeScore(file: File): Promise<RecognizeApiResponse> {
+export async function recognizeScore(files: File[]): Promise<RecognizeApiResponse> {
   const formData = new FormData()
-  formData.append('file', file)
+  for (const file of files) {
+    formData.append('file', file)
+  }
 
   const response = await fetch(`${BASE_URL}/api/v1/recognize`, {
     method: 'POST',

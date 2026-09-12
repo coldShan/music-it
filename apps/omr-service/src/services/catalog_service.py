@@ -61,7 +61,7 @@ class CatalogService:
 
     @staticmethod
     def _default_instruments() -> tuple[InstrumentId, InstrumentId]:
-        return "piano", "piano"
+        return "toneSynth", "toneSynth"
 
     def _ensure_layout(self) -> None:
         self.images_dir.mkdir(parents=True, exist_ok=True)

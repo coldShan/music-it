@@ -59,8 +59,8 @@ def test_create_reuse_and_list_entries(tmp_path: Path) -> None:
     assert detail.id == first.id
     assert len(entries) == 1
     assert entries[0].imageHash == image_hash
-    assert entries[0].melodyInstrument == "piano"
-    assert entries[0].leftHandInstrument == "piano"
+    assert entries[0].melodyInstrument == "toneSynth"
+    assert entries[0].leftHandInstrument == "toneSynth"
     assert detail.result.playbackEvents[0].pitches == ["A4"]
 
 
@@ -79,12 +79,12 @@ def test_update_and_delete_entry(tmp_path: Path) -> None:
     updated = service.update_entry(
         detail.id,
         title="新标题",
-        melody_instrument="violin",
-        left_hand_instrument="guitar",
+        melody_instrument="eightBit",
+        left_hand_instrument="toneSynth",
     )
     assert updated.title == "新标题"
-    assert updated.melodyInstrument == "violin"
-    assert updated.leftHandInstrument == "guitar"
+    assert updated.melodyInstrument == "eightBit"
+    assert updated.leftHandInstrument == "toneSynth"
 
     deleted = service.delete_entry(detail.id)
     assert deleted.id == detail.id
@@ -183,5 +183,5 @@ def test_list_entries_fallbacks_instruments_for_legacy_index(tmp_path: Path) -> 
 
     entries = service.list_entries()
     assert entries[0].id == detail.id
-    assert entries[0].melodyInstrument == "piano"
-    assert entries[0].leftHandInstrument == "piano"
+    assert entries[0].melodyInstrument == "toneSynth"
+    assert entries[0].leftHandInstrument == "toneSynth"

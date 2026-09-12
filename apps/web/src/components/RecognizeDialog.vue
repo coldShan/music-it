@@ -7,8 +7,8 @@ const openModel = defineModel<boolean>('open', {
   default: false,
 })
 
-const fileModel = defineModel<File | null>('file', {
-  default: null,
+const filesModel = defineModel<File[]>('files', {
+  default: () => [],
 })
 
 const props = withDefaults(
@@ -77,7 +77,7 @@ function onSubmit() {
             <p class="description">识别成功后弹窗会自动关闭，你可以随时再次打开继续识别。</p>
 
             <form class="content" @submit.prevent="onSubmit">
-              <UploadField v-model:file="fileModel" />
+              <UploadField v-model:files="filesModel" />
 
               <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
               <p v-if="statusMessage" class="status">{{ statusMessage }}</p>

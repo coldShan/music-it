@@ -75,8 +75,8 @@ def test_recognize_png_returns_notes_and_catalog_fields(monkeypatch, tmp_path: P
     assert body["playbackEvents"][0]["pitches"] == ["G4"]
     assert body["catalogEntryId"]
     assert body["catalogTitle"] == "score"
-    assert body["melodyInstrument"] == "piano"
-    assert body["leftHandInstrument"] == "piano"
+    assert body["melodyInstrument"] == "toneSynth"
+    assert body["leftHandInstrument"] == "toneSynth"
     assert body["isReused"] is False
 
 
@@ -103,6 +103,36 @@ def test_recognize_same_file_reuses_catalog(monkeypatch, tmp_path: Path) -> None
     assert second.status_code == 200
     assert calls["count"] == 1
     assert second.json()["isReused"] is True
+
+
+def test_recognize_multiple_files_sorts_and_merges_pages(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("CATALOG_PROJECT_ROOT", str(tmp_path))
+    recognized_contents = []
+
+    def fake_recognize(file_path, input_type):
+        recognized_contents.append(Path(file_path).read_bytes())
+        return _fake_result(input_type)
+
+    monkeypatch.setattr("src.main.recognize_file", fake_recognize)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/recognize",
+        files=[
+            ("file", ("song-10.png", BytesIO(b"page-10"), "image/png")),
+            ("file", ("song-2.png", BytesIO(b"page-2"), "image/png")),
+        ],
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert recognized_contents == [b"page-2", b"page-10"]
+    assert [note["startBeat"] for note in body["notes"]] == [0.0, 1.0]
+    assert [note["sourceMeasure"] for note in body["notes"]] == [1, 2]
+    assert [event["startBeat"] for event in body["playbackEvents"]] == [0.0, 1.0]
+    assert [event["sourceMeasure"] for event in body["playbackEvents"]] == [1, 2]
+    assert body["meta"]["inputType"] == "multi-image"
+    assert body["catalogTitle"] == "song-2"
 
 
 def test_catalog_endpoints(monkeypatch, tmp_path: Path) -> None:

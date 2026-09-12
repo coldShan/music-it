@@ -10,7 +10,7 @@ import {
 import type { InstrumentId } from '@music-it/shared-types'
 
 const model = defineModel<InstrumentId>({
-  default: 'piano',
+  default: 'toneSynth',
 })
 
 const props = withDefaults(

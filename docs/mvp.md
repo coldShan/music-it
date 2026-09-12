@@ -1,13 +1,13 @@
 # Music It MVP
 
 ## 功能
-- 上传 PNG/JPG/PDF（PDF 仅第一页）
+- 上传单个或多个 PNG/JPG/PDF（PDF 仅第一页），多文件按文件名排序后合并为同一首曲目
 - 后端调用 Audiveris 识别 MusicXML
 - 解析 tempo、拍号、右手主旋律音符序列
 - 新增双手播放事件（右手旋律 + 左手主伴奏声部）
 - 按 MusicXML 语义输出断句字段（`gateBeat` / `phraseBreakAfter` / `articulation`）
 - 前端展示音符表并自动弹奏（支持双手/只右手/只左手）
-- 支持旋律/左手独立音色（钢琴、吉他、八音盒、小提琴、小号、萨克斯、笛子）
+- 支持旋律/左手独立音色（钢琴、吉他、八音盒、小提琴、小号、萨克斯、笛子、8-bit、Tone 合成器）
 - 已识别曲目目录（持久化到项目目录，可直接播放、重命名、删除）
 
 ## 本地运行
@@ -44,7 +44,7 @@
 
 ## API
 - `GET /api/v1/health`
-- `POST /api/v1/recognize` (multipart/form-data, field: `file`)
+- `POST /api/v1/recognize`（multipart/form-data，重复使用 `file` 字段上传多页）
 - `GET /api/v1/catalog`
 - `GET /api/v1/catalog/{entry_id}`
 - `PATCH /api/v1/catalog/{entry_id}`
@@ -70,9 +70,9 @@
 - `sourceMeasure`: 来源小节号
 
 ### 曲目音色字段
-- `melodyInstrument`: 主旋律音色（默认 `piano`）
-- `leftHandInstrument`: 左手音色（默认 `piano`）
-- 支持值：`piano | guitar | musicBox | violin | trumpet | saxophone | flute`
+- `melodyInstrument`: 主旋律音色（默认 `toneSynth`）
+- `leftHandInstrument`: 左手音色（默认 `toneSynth`）
+- 支持值：`piano | guitar | musicBox | violin | trumpet | saxophone | flute | eightBit | toneSynth`
 
 ### PATCH /api/v1/catalog/{entry_id}
 - 支持部分更新，至少提供一个字段：
@@ -82,7 +82,7 @@
 
 ## 限制
 - 仅支持印刷体五线谱；右手输出主旋律，左手仅取 `staff=2` 主伴奏声部。
-- 音色样本首播需要网络加载，加载失败会自动回退钢琴。
+- SoundFont 音色样本首播需要网络加载，加载失败会自动回退钢琴；Tone 合成器无需联网加载。
 - 暂不支持左手全声部混合、复杂装饰音、手写谱和实时摄像头。
 
 ## 识别日志与复盘
@@ -103,7 +103,7 @@
   - `index.json`：目录索引
   - `images/`：已保存图片副本
   - `records/`：识别结果记录
-- 同一图片按 SHA-256 去重，重复上传会复用已识别结果。
+- 单张图片或同一组有序图片按 SHA-256 去重，重复上传会复用已识别结果。
 - 如需清空历史记录（含图片和记录文件），调用：
   ```bash
   curl -X POST "http://localhost:8000/api/v1/catalog/reset?confirm=WIPE_CATALOG"
