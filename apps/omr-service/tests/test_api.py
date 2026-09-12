@@ -110,8 +110,15 @@ def test_recognize_multiple_files_sorts_and_merges_pages(monkeypatch, tmp_path: 
     recognized_contents = []
 
     def fake_recognize(file_path, input_type):
-        recognized_contents.append(Path(file_path).read_bytes())
-        return _fake_result(input_type)
+        content = Path(file_path).read_bytes()
+        recognized_contents.append(content)
+        result = _fake_result(input_type)
+        if content == b"page-10":
+            result.notes[0].startBeat = 49.25
+            result.notes[0].sourceMeasure = 12
+            result.playbackEvents[0].startBeat = 49.25
+            result.playbackEvents[0].sourceMeasure = 12
+        return result
 
     monkeypatch.setattr("src.main.recognize_file", fake_recognize)
     client = TestClient(app)

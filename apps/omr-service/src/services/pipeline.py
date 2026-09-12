@@ -48,11 +48,14 @@ def merge_recognize_results(results: list[RecognizeResponse]) -> RecognizeRespon
     measure_offset = 0
 
     for result in results:
+        page_items = [*result.notes, *result.playbackEvents]
+        page_start = min((item.startBeat for item in page_items), default=0.0)
+        first_measure = min((item.sourceMeasure for item in page_items), default=1)
         notes.extend(
             note.model_copy(
                 update={
-                    "startBeat": round(note.startBeat + beat_offset, 4),
-                    "sourceMeasure": note.sourceMeasure + measure_offset,
+                    "startBeat": round(note.startBeat - page_start + beat_offset, 4),
+                    "sourceMeasure": note.sourceMeasure - first_measure + 1 + measure_offset,
                 }
             )
             for note in result.notes
@@ -60,18 +63,17 @@ def merge_recognize_results(results: list[RecognizeResponse]) -> RecognizeRespon
         playback_events.extend(
             event.model_copy(
                 update={
-                    "startBeat": round(event.startBeat + beat_offset, 4),
-                    "sourceMeasure": event.sourceMeasure + measure_offset,
+                    "startBeat": round(event.startBeat - page_start + beat_offset, 4),
+                    "sourceMeasure": event.sourceMeasure - first_measure + 1 + measure_offset,
                 }
             )
             for event in result.playbackEvents
         )
         warnings.extend(result.meta.warnings)
 
-        page_items = [*result.notes, *result.playbackEvents]
         if page_items:
-            beat_offset += max(item.startBeat + item.durationBeat for item in page_items)
-            measure_offset += max(item.sourceMeasure for item in page_items)
+            beat_offset += max(item.startBeat + item.durationBeat for item in page_items) - page_start
+            measure_offset += max(item.sourceMeasure for item in page_items) - first_measure + 1
 
     warnings.append(f"Merged {len(results)} files in filename order.")
     return RecognizeResponse(

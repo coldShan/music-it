@@ -180,6 +180,7 @@ def _files_hash(contents: list[bytes], service: CatalogService) -> str:
         return service.compute_hash(contents[0])
 
     digest = hashlib.sha256()
+    digest.update(b"music-it-multi-v2\0")
     for content in contents:
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
