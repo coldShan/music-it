@@ -9,6 +9,20 @@ const playerMocks = vi.hoisted(() => ({
   filterPlaybackEvents: vi.fn((events, mode = 'both') =>
     mode === 'both' ? events : events.filter((event: { hand: string }) => event.hand === mode),
   ),
+  preparePracticeInstruments: vi.fn().mockResolvedValue([]),
+  playCueNow: vi.fn(),
+  noteOnNow: vi.fn(),
+  noteOffNow: vi.fn(),
+  stopPracticeSounds: vi.fn(),
+}))
+const midiMocks = vi.hoisted(() => ({
+  connectMidi: vi.fn(),
+  MidiUnavailableError: class extends Error {
+    constructor(message = 'MIDI 不可用') {
+      super(message)
+      this.name = 'MidiUnavailableError'
+    }
+  },
 }))
 const apiMocks = vi.hoisted(() => ({
   recognizeScore: vi.fn(),
@@ -20,6 +34,7 @@ const apiMocks = vi.hoisted(() => ({
 }))
 
 vi.mock('./services/player', () => playerMocks)
+vi.mock('./services/midiInput', () => midiMocks)
 vi.mock('./services/api', () => apiMocks)
 
 import App from './App.vue'
@@ -64,6 +79,28 @@ function button(wrapper: VueWrapper, text: string) {
   return found
 }
 
+function fakePracticeMidi() {
+  const listeners = new Set<(message: unknown) => void>()
+  const unsubscribe = vi.fn(() => {
+    listeners.clear()
+  })
+  const connection = {
+    inputs: () => [{ id: 'kbd', name: '键盘 A' }],
+    onInputsChange: () => () => undefined,
+    listen: vi.fn((_id: string, callback: (message: unknown) => void) => {
+      listeners.add(callback)
+      return unsubscribe
+    }),
+    close: vi.fn(() => {
+      listeners.clear()
+    }),
+    unsubscribe,
+    listenerCount: () => listeners.size,
+  }
+  midiMocks.connectMidi.mockResolvedValue(connection)
+  return connection
+}
+
 describe('App', () => {
   let wrapper: VueWrapper | undefined
 
@@ -73,6 +110,8 @@ describe('App', () => {
     vi.clearAllMocks()
     playerMocks.playScore.mockResolvedValue([])
     playerMocks.getPlaybackSeconds.mockReturnValue(0)
+    playerMocks.preparePracticeInstruments.mockResolvedValue([])
+    midiMocks.connectMidi.mockReset()
     apiMocks.listCatalogEntries.mockResolvedValue([])
     apiMocks.updateCatalogEntry.mockResolvedValue({})
     apiMocks.deleteCatalogEntry.mockResolvedValue(undefined)
@@ -380,5 +419,93 @@ describe('App', () => {
     await flush()
 
     expect(wrapper.get('.studio-heading h1').text()).toBe('第二首')
+  })
+
+  it('stops playback when practice starts and stops practice when playback starts', async () => {
+    apiMocks.listCatalogEntries.mockResolvedValue([summary('first', '练习曲')])
+    apiMocks.getCatalogEntry.mockResolvedValue(detail('first', '练习曲'))
+    const connection = fakePracticeMidi()
+    wrapper = mount(App, { attachTo: document.body })
+    await flush()
+    await wrapper.get('[data-testid="catalog-select-first"]').trigger('click')
+    await flush()
+    await wrapper.get('[data-testid="practice-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="practice-connect"]').trigger('click')
+    await flush()
+    expect(midiMocks.connectMidi).toHaveBeenCalledTimes(1)
+
+    await wrapper.get('[data-testid="main-play"]').trigger('click')
+    await flush()
+    expect(wrapper.find('[data-testid="main-stop"]').exists()).toBe(true)
+
+    await wrapper.get('[data-testid="practice-start"]').trigger('click')
+    await flush()
+    expect(playerMocks.stopScore).toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="main-play"]').exists()).toBe(true)
+    expect(connection.listen).toHaveBeenCalledTimes(1)
+
+    await wrapper.get('[data-testid="main-play"]').trigger('click')
+    await flush()
+    expect(connection.unsubscribe).toHaveBeenCalled()
+    expect(playerMocks.stopPracticeSounds).toHaveBeenCalled()
+  })
+
+  it('stops listening to the old score after switching tracks', async () => {
+    apiMocks.listCatalogEntries.mockResolvedValue([summary('first', '第一首'), summary('second', '第二首')])
+    apiMocks.getCatalogEntry.mockImplementation((id: string) =>
+      Promise.resolve(detail(id, id === 'first' ? '第一首' : '第二首')),
+    )
+    const connection = fakePracticeMidi()
+    wrapper = mount(App, { attachTo: document.body })
+    await flush()
+    await wrapper.get('[data-testid="catalog-select-first"]').trigger('click')
+    await flush()
+    await wrapper.get('[data-testid="practice-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="practice-connect"]').trigger('click')
+    await flush()
+    await wrapper.get('[data-testid="practice-start"]').trigger('click')
+    await flush()
+    expect(connection.listen).toHaveBeenCalledTimes(1)
+    expect(connection.listenerCount()).toBe(1)
+
+    await button(wrapper, '返回曲库').trigger('click')
+    await flush()
+    expect(connection.unsubscribe).toHaveBeenCalled()
+    expect(connection.close).toHaveBeenCalled()
+    expect(connection.listenerCount()).toBe(0)
+
+    await wrapper.get('[data-testid="catalog-select-second"]').trigger('click')
+    await flush()
+    expect(connection.listen).toHaveBeenCalledTimes(1)
+    expect(connection.listenerCount()).toBe(0)
+  })
+
+  it('releases the practice listener when the active score is deleted', async () => {
+    apiMocks.listCatalogEntries.mockResolvedValue([summary('first', '要删的曲子')])
+    apiMocks.getCatalogEntry.mockResolvedValue(detail('first', '要删的曲子'))
+    const connection = fakePracticeMidi()
+    wrapper = mount(App, { attachTo: document.body })
+    await flush()
+    await wrapper.get('[data-testid="catalog-select-first"]').trigger('click')
+    await flush()
+    await wrapper.get('[data-testid="practice-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="practice-connect"]').trigger('click')
+    await flush()
+    await wrapper.get('[data-testid="practice-start"]').trigger('click')
+    await flush()
+
+    await button(wrapper, '返回曲库').trigger('click')
+    await flush()
+    await wrapper.get('[data-testid="catalog-menu-first"]').trigger('click')
+    await flush()
+    await wrapper.get('[data-testid="catalog-delete-first"]').trigger('click')
+    await flush()
+    byTestId('confirm-dialog-confirm').click()
+    await flush()
+
+    expect(apiMocks.deleteCatalogEntry).toHaveBeenCalledWith('first')
+    expect(connection.unsubscribe).toHaveBeenCalled()
+    expect(connection.close).toHaveBeenCalled()
+    expect(connection.listenerCount()).toBe(0)
   })
 })

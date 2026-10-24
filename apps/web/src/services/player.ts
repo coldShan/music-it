@@ -2,6 +2,8 @@ import * as Tone from 'tone'
 import * as Soundfont from 'soundfont-player'
 import type { InstrumentId, PlaybackEvent } from '@music-it/shared-types'
 
+import type { AutoPlayCue } from './practice'
+
 export type PlaybackMode = 'both' | 'right' | 'left'
 type PlaybackOptions = {
   tempo: number
@@ -17,6 +19,12 @@ let part: Tone.Part | null = null
 let toneSynth: Tone.PolySynth | null = null
 type SoundfontInstrumentId = Exclude<InstrumentId, 'toneSynth'>
 const instrumentCache = new Map<SoundfontInstrumentId, Promise<Soundfont.Player>>()
+const practicePlayers = new Map<InstrumentId, Soundfont.Player>()
+type HeldSound =
+  | { kind: 'synth' }
+  | { kind: 'sample'; node?: { stop?: (when?: number) => void } | null }
+const heldSounds = new Map<number, HeldSound[]>()
+const PITCH_CLASSES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
 export const SOUND_FONT_PROGRAMS = {
   piano: 'acoustic_grand_piano',
@@ -92,6 +100,130 @@ export function resolveHandInstrument(
   return hand === 'left' ? leftHandInstrument : melodyInstrument
 }
 
+function currentAudioTime(): number {
+  const immediate = (Tone as unknown as { immediate?: () => number }).immediate
+  return typeof immediate === 'function' ? immediate.call(Tone) : 0
+}
+
+function ensureToneSynth(): Tone.PolySynth {
+  toneSynth ??= new Tone.PolySynth(Tone.Synth, {
+    oscillator: { type: 'triangle8' },
+    envelope: { attack: 0.01, decay: 0.3, sustain: 0.2, release: 0.8 },
+    volume: -8,
+  }).toDestination()
+  return toneSynth
+}
+
+export function midiToPitch(midi: number): string {
+  const pitchClass = PITCH_CLASSES[((midi % 12) + 12) % 12]
+  const octave = Math.floor(midi / 12) - 1
+  return `${pitchClass}${octave}`
+}
+
+export async function preparePracticeInstruments(ids: InstrumentId[]): Promise<string[]> {
+  const warnings: string[] = []
+  await Tone.start()
+
+  for (const instrumentId of new Set(ids)) {
+    if (isToneSynthInstrument(instrumentId)) {
+      ensureToneSynth()
+      continue
+    }
+
+    const loaded = await loadInstrumentWithFallback(instrumentId)
+    practicePlayers.set(loaded.resolved, loaded.player)
+    if (loaded.resolved !== instrumentId) {
+      practicePlayers.set(instrumentId, loaded.player)
+    }
+    if (loaded.warning) {
+      warnings.push(loaded.warning)
+    }
+  }
+
+  return warnings
+}
+
+function addHeldSound(midi: number, sound: HeldSound): void {
+  const held = heldSounds.get(midi)
+  if (held) {
+    held.push(sound)
+  } else {
+    heldSounds.set(midi, [sound])
+  }
+}
+
+export function playCueNow(
+  cue: AutoPlayCue,
+  options: {
+    tempo: number
+    melodyInstrument: InstrumentId
+    leftHandInstrument: InstrumentId
+  },
+): void {
+  const { tempo, melodyInstrument, leftHandInstrument } = options
+  const time = currentAudioTime() + (cue.delayBeats * 60) / tempo
+
+  for (const event of cue.events) {
+    const selected = resolveHandInstrument(event.hand, melodyInstrument, leftHandInstrument)
+    const durationSeconds = (event.gateBeat * 60) / tempo
+
+    if (isToneSynthInstrument(selected)) {
+      ensureToneSynth().triggerAttackRelease(event.pitches, durationSeconds, time)
+      continue
+    }
+
+    const player = practicePlayers.get(selected)
+    if (!player) continue
+
+    for (const pitch of event.pitches) {
+      player.play(pitch, time, {
+        duration: durationSeconds,
+        gain: event.hand === 'left' ? 0.9 : 1,
+      })
+    }
+  }
+}
+
+export function noteOnNow(midi: number, instrumentId: InstrumentId, velocity: number): void {
+  const gain = velocity / 127
+
+  if (isToneSynthInstrument(instrumentId)) {
+    ensureToneSynth().triggerAttack(midiToPitch(midi), currentAudioTime(), gain)
+    addHeldSound(midi, { kind: 'synth' })
+    return
+  }
+
+  const player = practicePlayers.get(instrumentId)
+  if (!player) return
+
+  const node = player.play(midiToPitch(midi), undefined, { gain }) as unknown as
+    | { stop?: (when?: number) => void }
+    | undefined
+  addHeldSound(midi, { kind: 'sample', node })
+}
+
+export function noteOffNow(midi: number): void {
+  const held = heldSounds.get(midi)
+  if (!held) return
+
+  for (const sound of held) {
+    if (sound.kind === 'synth') {
+      toneSynth?.triggerRelease(midiToPitch(midi))
+    } else {
+      sound.node?.stop?.()
+    }
+  }
+  heldSounds.delete(midi)
+}
+
+export function stopPracticeSounds(): void {
+  for (const player of new Set(practicePlayers.values())) {
+    player.stop()
+  }
+  toneSynth?.releaseAll()
+  heldSounds.clear()
+}
+
 export async function playScore(options: PlaybackOptions): Promise<string[]> {
   const { tempo, playbackEvents, mode = 'both', melodyInstrument, leftHandInstrument } = options
   const targetEvents = filterPlaybackEvents(playbackEvents, mode)
@@ -115,11 +247,7 @@ export async function playScore(options: PlaybackOptions): Promise<string[]> {
 
   for (const instrumentId of required) {
     if (isToneSynthInstrument(instrumentId)) {
-      toneSynth ??= new Tone.PolySynth(Tone.Synth, {
-        oscillator: { type: 'triangle8' },
-        envelope: { attack: 0.01, decay: 0.3, sustain: 0.2, release: 0.8 },
-        volume: -8,
-      }).toDestination()
+      ensureToneSynth()
       continue
     }
 
