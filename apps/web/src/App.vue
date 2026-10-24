@@ -6,6 +6,7 @@ import CatalogList from './components/CatalogList.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import InstrumentListbox from './components/InstrumentListbox.vue'
 import PlaybackModeGroup from './components/PlaybackModeGroup.vue'
+import PracticePanel from './components/PracticePanel.vue'
 import RecognizeDialog from './components/RecognizeDialog.vue'
 import ResultTable from './components/ResultTable.vue'
 import ScorePreview from './components/ScorePreview.vue'
@@ -45,6 +46,9 @@ const search = ref('')
 const sort = ref('recent')
 const isPlaying = ref(false)
 const playbackLoading = ref(false)
+const practiceOpen = ref(false)
+const practiceView = ref<{ beat: number; target: number[]; hits: number[]; wrong: number | null } | null>(null)
+const practicePanel = ref<InstanceType<typeof PracticePanel> | null>(null)
 const elapsed = ref(0)
 const playingDuration = ref(0)
 let playbackTimer: ReturnType<typeof setInterval> | undefined
@@ -100,6 +104,7 @@ function onStop() {
 }
 async function onPlay() {
   if (!result.value || !canPlay.value || playbackLoading.value) return
+  practicePanel.value?.stop()
   onStop()
   const request = playRequest
   const events = resolvedPlaybackEvents.value
@@ -250,7 +255,10 @@ async function onCommitRename(entryId: string, title: string) {
     onCancelRename()
   } catch (error) { errorMessage.value = error instanceof Error ? error.message : '重命名失败，请重试' }
 }
-watch(view, () => { window.scrollTo({ top: 0, behavior: 'instant' }) })
+watch(view, () => {
+  if (view.value !== 'studio') practiceView.value = null
+  window.scrollTo({ top: 0, behavior: 'instant' })
+})
 watch(playbackMode, onStop)
 onMounted(() => { void refreshCatalog() })
 onUnmounted(() => { selectionRequest += 1; onStop() })
@@ -314,13 +322,16 @@ onUnmounted(() => { selectionRequest += 1; onStop() })
         <section class="studio-heading"><p class="eyebrow">THE LISTENING ROOM</p><h1>{{ activeTitle }}</h1><div class="score-facts"><span>{{ result.tempo }} <small>BPM</small></span><i></i><span>{{ result.timeSignature }} <small>拍</small></span><i></i><span>{{ formatTime(duration) }} <small>时长</small></span></div></section>
         <section class="listening-surface" aria-label="曲目试听">
           <div class="preview-header"><div><p class="eyebrow">MELODY AT A GLANCE</p><h2>看见旋律的起伏</h2></div><span class="voice-key"><i></i>右手 <i></i>左手</span></div>
-          <div class="practice-controls"><PlaybackModeGroup v-model="playbackMode" /><button class="settings-toggle" data-testid="settings-toggle" :aria-expanded="settingsOpen" aria-controls="sound-settings" @click="settingsOpen = !settingsOpen">音色设置 <span aria-hidden="true">{{ settingsOpen ? '−' : '＋' }}</span></button></div>
+          <div class="practice-controls"><PlaybackModeGroup v-model="playbackMode" /><div class="panel-toggles"><button class="settings-toggle" data-testid="practice-toggle" :aria-expanded="practiceOpen" aria-controls="practice-panel" @click="practiceOpen = !practiceOpen">电子琴练习 <span aria-hidden="true">{{ practiceOpen ? '−' : '＋' }}</span></button><button class="settings-toggle" data-testid="settings-toggle" :aria-expanded="settingsOpen" aria-controls="sound-settings" @click="settingsOpen = !settingsOpen">音色设置 <span aria-hidden="true">{{ settingsOpen ? '−' : '＋' }}</span></button></div></div>
           <div v-if="settingsOpen" id="sound-settings" class="sound-settings">
             <InstrumentListbox test-id-prefix="melody-instrument" label="右手 · 主旋律" :model-value="melodyInstrument" :options="instrumentOptions" :disabled="instrumentSaving" @update:model-value="onInstrumentChange('melody', $event)" />
             <InstrumentListbox test-id-prefix="left-instrument" label="左手 · 伴奏" :model-value="leftHandInstrument" :options="instrumentOptions" :disabled="instrumentSaving" @update:model-value="onInstrumentChange('left', $event)" />
             <p>{{ instrumentSaving ? '正在保存音色…' : '音色会为这首曲目保存，下次播放时生效。' }}</p>
           </div>
-          <ScorePreview :events="resolvedPlaybackEvents" :duration-beats="result.durationBeats" :beat="elapsed * result.tempo / 60" :mode="playbackMode" />
+          <div v-show="practiceOpen" id="practice-panel">
+            <PracticePanel ref="practicePanel" :events="resolvedPlaybackEvents" :tempo="result.tempo" :mode="playbackMode" :measure-count="result.measureCount" :melody-instrument="melodyInstrument" :left-hand-instrument="leftHandInstrument" @start="onStop" @view="practiceView = $event" />
+          </div>
+          <ScorePreview :events="resolvedPlaybackEvents" :duration-beats="result.durationBeats" :beat="elapsed * result.tempo / 60" :mode="playbackMode" :practice="practiceView" />
         </section>
         <p class="practice-hint">{{ isPlaying ? '正在聆听。切换声部会停止播放；音色更改在下次播放时生效。' : '点击下方播放开始聆听，或选择一个声部单独练习。' }}</p>
         <div v-if="!canPlay && !entryLoading && !loading" class="notice" role="status">这份乐谱没有可播放的音符。可以查看识别详情，或换一张更清晰的谱面重新导入。</div>
@@ -354,3 +365,10 @@ onUnmounted(() => { selectionRequest += 1; onStop() })
     <ConfirmDialog v-model:open="confirmDeleteOpen" title="删除这首乐谱？" :error-message="errorMessage" :description="`「${pendingDelete?.title ?? ''}」及其识别结果会被删除，此操作无法撤销。`" :loading="deleteLoading" confirm-text="删除乐谱" @confirm="onConfirmDelete" />
   </div>
 </template>
+
+<style scoped>
+.panel-toggles { display: flex; gap: 10px; align-items: center; }
+@media (max-width: 620px) {
+  .panel-toggles { align-self: end; }
+}
+</style>
