@@ -278,6 +278,27 @@ class CatalogService:
 
         return CatalogEntryDetail(**summary.model_dump(), result=result)
 
+    def replace_result(self, entry_id: str, result: RecognizeResponse) -> CatalogEntryDetail:
+        index = self._read_index()
+        entry_index, raw_summary = self._entry_by_id(index["entries"], entry_id)
+        summary = self._summary_from_raw(raw_summary)
+        record_path = self._record_path(entry_id)
+        # Retain every previous result, including manual corrections, before replacement.
+        backup_dir = self.root_dir / "storage/catalog/backups" / entry_id
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup = backup_dir / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')}.json"
+        self._atomic_write_bytes(backup, record_path.read_bytes())
+        summary.tempo = result.tempo
+        summary.timeSignature = result.timeSignature
+        summary.noteCount = len(result.notes)
+        summary.updatedAt = self._now_iso()
+        self._atomic_write_text(record_path, json.dumps(
+            {"summary": summary.model_dump(), "result": result.model_dump()}, ensure_ascii=False, indent=2,
+        ))
+        index["entries"][entry_index] = summary.model_dump()
+        self._write_index(index)
+        return CatalogEntryDetail(**summary.model_dump(), result=result)
+
     def update_entry(
         self,
         entry_id: str,

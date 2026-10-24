@@ -134,9 +134,9 @@ def test_recognize_multiple_files_sorts_and_merges_pages(monkeypatch, tmp_path: 
     assert response.status_code == 200
     body = response.json()
     assert recognized_contents == [b"page-2", b"page-10"]
-    assert [note["startBeat"] for note in body["notes"]] == [0.0, 1.0]
+    assert [note["startBeat"] for note in body["notes"]] == [0.0, 50.25]
     assert [note["sourceMeasure"] for note in body["notes"]] == [1, 2]
-    assert [event["startBeat"] for event in body["playbackEvents"]] == [0.0, 1.0]
+    assert [event["startBeat"] for event in body["playbackEvents"]] == [0.0, 50.25]
     assert [event["sourceMeasure"] for event in body["playbackEvents"]] == [1, 2]
     assert body["meta"]["inputType"] == "multi-image"
     assert body["catalogTitle"] == "song-2"
@@ -205,3 +205,34 @@ def test_catalog_reset_endpoint(monkeypatch, tmp_path: Path) -> None:
     catalog = client.get("/api/v1/catalog")
     assert catalog.status_code == 200
     assert catalog.json() == []
+
+
+def test_force_recognition_replaces_cached_result_and_preserves_backup(monkeypatch, tmp_path):
+    import json
+    monkeypatch.setenv('CATALOG_PROJECT_ROOT', str(tmp_path))
+    calls = []
+    def recognize(*args):
+        calls.append(1)
+        result = _fake_result()
+        result.tempo = 90 if len(calls) == 1 else 100
+        return result
+    monkeypatch.setattr('src.main.recognize_file', recognize)
+    client = TestClient(app)
+    def upload(query=''):
+        return client.post('/api/v1/recognize' + query, files={'file': ('score.png', b'image', 'image/png')})
+    first = upload().json()
+    entry_id = first['catalogEntryId']
+    client.patch('/api/v1/catalog/' + entry_id, json={'title': 'My title', 'melodyInstrument': 'violin'})
+    assert upload().json()['isReused'] is True
+    second = upload('?force=true')
+    assert second.status_code == 200
+    assert len(calls) == 2
+    assert second.json()['tempo'] == 100
+    assert second.json()['catalogEntryId'] == entry_id
+    assert second.json()['catalogTitle'] == 'My title'
+    assert second.json()['melodyInstrument'] == 'violin'
+    assert client.get('/api/v1/catalog/' + entry_id).json()['result']['tempo'] == 100
+    backups = list((tmp_path / 'storage/catalog/backups' / entry_id).glob('*.json'))
+    assert len(backups) == 1
+    assert json.loads(backups[0].read_text())['result']['tempo'] == 90
+    assert len(client.get('/api/v1/catalog').json()) == 1

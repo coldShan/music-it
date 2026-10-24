@@ -24,6 +24,18 @@ def _write_score(path: Path, body: str) -> None:
     )
 
 
+def _write_parts(path: Path, *parts: tuple[str, str]) -> None:
+    part_list = "".join(
+        f'<score-part id="{part_id}"><part-name>{part_id}</part-name></score-part>'
+        for part_id, _ in parts
+    )
+    body = "".join(f'<part id="{part_id}">{measures}</part>' for part_id, measures in parts)
+    path.write_text(
+        f'<?xml version="1.0"?><score-partwise version="3.1"><part-list>{part_list}</part-list>{body}</score-partwise>',
+        encoding="utf-8",
+    )
+
+
 def test_parse_musicxml_extracts_tempo_signature_and_phrase_fields() -> None:
     fixture = Path(__file__).parent / "fixtures" / "sample.musicxml"
 
@@ -295,4 +307,106 @@ def test_parse_musicxml_outputs_both_hands_and_chord_events(tmp_path: Path) -> N
     assert len(left_events) == 1
     assert left_events[0].pitches == ["C3", "G3"]
     assert left_events[0].midis == [48, 55]
-    assert any("Left-hand accompaniment voice selected" in warning for warning in result.meta.warnings)
+    assert not any("Bass-clef staff not detected" in warning for warning in result.meta.warnings)
+
+
+def test_parse_split_parts_aligns_measures_with_different_divisions_and_rests(tmp_path: Path) -> None:
+    score = tmp_path / "split-piano.musicxml"
+    _write_parts(
+        score,
+        (
+            "P1",
+            """
+            <measure number="8"><attributes><divisions>2</divisions><clef><sign>G</sign><line>2</line></clef></attributes>
+              <note><pitch><step>C</step><octave>5</octave></pitch><duration>2</duration><voice>1</voice></note>
+            </measure>
+            <measure number="9"><note><pitch><step>D</step><octave>5</octave></pitch><duration>2</duration><voice>1</voice></note></measure>
+            """,
+        ),
+        (
+            "P2",
+            """
+            <measure number="8"><attributes><divisions>4</divisions><clef><sign>F</sign><line>4</line></clef></attributes>
+              <note><rest/><duration>8</duration><voice>1</voice></note>
+            </measure>
+            <measure number="9"><note><pitch><step>C</step><octave>3</octave></pitch><duration>4</duration><voice>1</voice></note></measure>
+            """,
+        ),
+    )
+
+    result = parse_musicxml(score)
+
+    assert result.durationBeats == 3.0
+    assert result.measureCount == 2
+    assert [(note.pitch, note.startBeat, note.sourceMeasure) for note in result.notes] == [
+        ("C5", 0.0, 1), ("D5", 2.0, 2)
+    ]
+    left = [event for event in result.playbackEvents if event.hand == "left"]
+    assert [(event.pitches, event.startBeat, event.sourceMeasure) for event in left] == [(["C3"], 2.0, 2)]
+    assert result.timeSignature == "4/4"
+    assert any("Time signature not found" in warning for warning in result.meta.warnings)
+
+
+def test_parse_keeps_all_voices_and_separate_durations_at_same_onset(tmp_path: Path) -> None:
+    score = tmp_path / "voices.musicxml"
+    _write_score(
+        score,
+        """
+        <measure number="1"><attributes><divisions>1</divisions></attributes>
+          <note><pitch><step>C</step><octave>5</octave></pitch><duration>2</duration><voice>1</voice><staff>1</staff></note>
+          <backup><duration>2</duration></backup>
+          <note><pitch><step>E</step><octave>5</octave></pitch><duration>1</duration><voice>2</voice><staff>1</staff></note>
+        </measure>
+        """,
+    )
+
+    result = parse_musicxml(score)
+
+    right = [event for event in result.playbackEvents if event.hand == "right"]
+    assert {(event.voice, event.pitches[0], event.durationBeat) for event in right} == {
+        ("1", "C5", 2.0), ("2", "E5", 1.0)
+    }
+    assert len({event.gateBeat for event in right}) == 2
+    assert any("retained all voices" in warning for warning in result.meta.warnings)
+
+
+def test_ties_do_not_cross_voices(tmp_path: Path) -> None:
+    score = tmp_path / "voice-ties.musicxml"
+    _write_score(
+        score,
+        """
+        <measure number="1"><attributes><divisions>1</divisions></attributes>
+          <note><pitch><step>G</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><tie type="start"/></note>
+          <backup><duration>1</duration></backup>
+          <note><pitch><step>G</step><octave>4</octave></pitch><duration>2</duration><voice>2</voice><tie type="stop"/></note>
+        </measure>
+        """,
+    )
+
+    result = parse_musicxml(score)
+    right = [event for event in result.playbackEvents if event.hand == "right"]
+    assert sorted((event.voice, event.durationBeat) for event in right) == [("1", 1.0), ("2", 2.0)]
+
+
+def test_irregular_measures_keep_actual_duration_and_warn_except_pickup(tmp_path: Path) -> None:
+    score = tmp_path / "irregular.musicxml"
+    _write_score(
+        score,
+        """
+        <measure number="20"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>
+          <note><rest/><duration>1</duration></note>
+        </measure>
+        <measure number="21"><note><rest/><duration>5</duration></note></measure>
+        <measure number="22"><note><rest/><duration>2</duration></note></measure>
+        <measure number="23" implicit="yes"><note><rest/><duration>1</duration></note></measure>
+        """,
+    )
+
+    result = parse_musicxml(score)
+
+    assert result.durationBeats == 9.0
+    assert result.measureCount == 4
+    meter_warnings = [warning for warning in result.meta.warnings if "expected 4" in warning]
+    assert len(meter_warnings) == 2
+    assert "Measure 2" in meter_warnings[0]
+    assert "Measure 3" in meter_warnings[1]

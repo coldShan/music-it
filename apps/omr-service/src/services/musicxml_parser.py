@@ -49,6 +49,7 @@ class TimelineNote:
     start_beat: float
     duration_beat: float
     source_measure: int
+    part: str
     staff: str
     voice: str
     is_rest: bool
@@ -79,6 +80,7 @@ class RenderNote:
     start_beat: float
     duration_beat: float
     source_measure: int
+    part: str
     staff: str
     voice: str
     tie_start: bool
@@ -122,6 +124,7 @@ def _parse_note_node(
     cursor_beat: float,
     divisions: int,
     source_measure: int,
+    part: str,
     chord_anchor: dict[tuple[str, str], float],
 ) -> tuple[TimelineNote | None, float]:
     if _find_first(note_node, "grace") is not None:
@@ -196,6 +199,7 @@ def _parse_note_node(
             start_beat=start_beat,
             duration_beat=duration_beat,
             source_measure=source_measure,
+            part=part,
             staff=staff,
             voice=voice,
             is_rest=is_rest,
@@ -212,29 +216,24 @@ def _parse_note_node(
     )
 
 
-def _choose_lead_voice(stats: dict[tuple[str, str], VoiceStats]) -> tuple[str, str] | None:
+def _choose_lead_voice(
+    stats: dict[tuple[str, str, str], VoiceStats],
+) -> tuple[str, str, str] | None:
     if not stats:
         return None
     ranked = sorted(
         stats.items(),
-        key=lambda item: (-item[1].count, -item[1].avg_pitch, item[0][0], item[0][1]),
+        key=lambda item: (-item[1].count, -item[1].avg_pitch, *item[0]),
     )
     return ranked[0][0]
 
 
-def _choose_voice_in_staff(
-    stats: dict[tuple[str, str], VoiceStats], staff: str
-) -> tuple[str, str] | None:
-    scoped = {key: value for key, value in stats.items() if key[0] == staff}
-    return _choose_lead_voice(scoped)
-
-
 def _merge_ties(notes: list[RenderNote]) -> list[RenderNote]:
     merged: list[RenderNote] = []
-    active: dict[int, RenderNote] = {}
+    active: dict[tuple[str, str, str, int], RenderNote] = {}
 
     for note in notes:
-        key = note.midi
+        key = (note.part, note.staff, note.voice, note.midi)
         if note.tie_stop and key in active:
             base = active[key]
             base.duration_beat = round(base.duration_beat + note.duration_beat, 4)
@@ -254,6 +253,7 @@ def _merge_ties(notes: list[RenderNote]) -> list[RenderNote]:
                 start_beat=note.start_beat,
                 duration_beat=note.duration_beat,
                 source_measure=note.source_measure,
+                part=note.part,
                 staff=note.staff,
                 voice=note.voice,
                 tie_start=False,
@@ -275,7 +275,10 @@ def _to_recognized_notes(notes: list[RenderNote]) -> list[RecognizedNote]:
     recognized: list[RecognizedNote] = []
     epsilon = 1e-4
     for index, note in enumerate(notes):
-        next_note = notes[index + 1] if index + 1 < len(notes) else None
+        next_note = next(
+            (candidate for candidate in notes[index + 1 :] if candidate.start_beat > note.start_beat + epsilon),
+            None,
+        )
         phrase_break_after = next_note is None or (
             next_note.start_beat - (note.start_beat + note.duration_beat)
         ) > epsilon
@@ -346,6 +349,7 @@ def _build_render_notes(
                 start_beat=event.start_beat,
                 duration_beat=event.duration_beat,
                 source_measure=event.source_measure,
+                part=event.part,
                 staff=event.staff,
                 voice=event.voice,
                 tie_start=event.tie_start,
@@ -366,12 +370,14 @@ def _to_playback_events(
     staff: str,
     voice: str,
 ) -> list[PlaybackEvent]:
-    grouped: dict[tuple[float, int], list[RecognizedNote]] = {}
+    grouped: dict[tuple[float, int, float, float], list[RecognizedNote]] = {}
     for note in notes:
-        grouped.setdefault((note.startBeat, note.sourceMeasure), []).append(note)
+        grouped.setdefault(
+            (note.startBeat, note.sourceMeasure, note.durationBeat, note.gateBeat), []
+        ).append(note)
 
     events: list[PlaybackEvent] = []
-    for (start_beat, source_measure), chord_notes in sorted(grouped.items()):
+    for (start_beat, source_measure, _, _), chord_notes in sorted(grouped.items()):
         ordered = sorted(chord_notes, key=lambda item: item.midi)
         events.append(
             PlaybackEvent(
@@ -392,137 +398,146 @@ def _to_playback_events(
 def parse_musicxml(path: Path, *, input_type: str = "png") -> RecognizeResponse:
     root = _read_mxl_root(path) if path.suffix.lower() == ".mxl" else ET.parse(path).getroot()
 
-    part = next((n for n in root if _strip_ns(n.tag) == "part"), None)
-    if part is None:
+    parts = [node for node in root if _strip_ns(node.tag) == "part"]
+    if not parts:
         raise ValueError("No part found in MusicXML")
 
     warnings: list[str] = []
+    rhythm_issues: list[str] = []
     tempo = None
-    time_signature = "4/4"
+    time_signature: str | None = None
     timeline: list[TimelineNote] = []
-    voice_stats: dict[tuple[str, str], VoiceStats] = {}
-    cursor_beat = 0.0
-    divisions = 1
-    chord_anchor: dict[tuple[str, str], float] = {}
+    voice_stats: dict[tuple[str, str, str], VoiceStats] = {}
+    part_measures: list[
+        tuple[str, list[tuple[list[TimelineNote], float, int, bool, float | None]]]
+    ] = []
+    staff_clefs: dict[tuple[str, str], str] = {}
 
-    for measure_idx, measure in enumerate(_find_children(part, "measure"), start=1):
-        source_measure = int(measure.attrib.get("number", str(measure_idx)))
-        measure_cursor = cursor_beat
-        measure_max = cursor_beat
+    for part_idx, part in enumerate(parts, start=1):
+        part_id = part.attrib.get("id", f"P{part_idx}")
+        divisions = 1
+        active_time_beats: float | None = None
+        measures = []
+        for measure_idx, measure in enumerate(_find_children(part, "measure"), start=1):
+            source_measure = measure_idx
+            measure_cursor = 0.0
+            measure_max = 0.0
+            measure_notes: list[TimelineNote] = []
+            chord_anchor: dict[tuple[str, str], float] = {}
 
-        for child in measure:
-            tag = _strip_ns(child.tag)
-            if tag == "attributes":
-                divisions_node = next(
-                    (x for x in child if _strip_ns(x.tag) == "divisions"), None
-                )
-                if divisions_node is not None and _text(divisions_node, "1").isdigit():
-                    divisions = max(1, int(_text(divisions_node, "1")))
-
-                time_node = next((x for x in child if _strip_ns(x.tag) == "time"), None)
-                if time_node is not None:
-                    beats = _text(_find_first(time_node, "beats"), "4")
-                    beat_type = _text(_find_first(time_node, "beat-type"), "4")
-                    time_signature = f"{beats}/{beat_type}"
-                continue
-
-            if tag == "direction" and tempo is None:
-                metronome = _find_first(child, "metronome")
-                if metronome is not None:
-                    per_minute = _as_number(_text(_find_first(metronome, "per-minute"), ""))
-                    if per_minute is not None:
-                        tempo = int(per_minute)
-                        continue
-                sound = _find_first(child, "sound")
-                if sound is not None and "tempo" in sound.attrib:
-                    raw = _as_number(sound.attrib["tempo"])
+            for child in measure:
+                tag = _strip_ns(child.tag)
+                if tag == "attributes":
+                    divisions_node = next((x for x in child if _strip_ns(x.tag) == "divisions"), None)
+                    if divisions_node is not None and _text(divisions_node, "1").isdigit():
+                        divisions = max(1, int(_text(divisions_node, "1")))
+                    time_node = next((x for x in child if _strip_ns(x.tag) == "time"), None)
+                    if time_node is not None:
+                        beats_text = _text(_find_first(time_node, "beats"))
+                        beat_type_text = _text(_find_first(time_node, "beat-type"))
+                        beats = _as_number(beats_text)
+                        beat_type = _as_number(beat_type_text)
+                        if beats is not None and beat_type:
+                            active_time_beats = beats * 4 / beat_type
+                            time_signature = time_signature or f"{beats_text}/{beat_type_text}"
+                    for clef in _find_children(child, "clef"):
+                        staff = clef.attrib.get("number", "1")
+                        sign = _text(_find_first(clef, "sign"))
+                        if sign:
+                            staff_clefs[(part_id, staff)] = sign
+                    continue
+                if tag == "direction" and tempo is None:
+                    metronome = _find_first(child, "metronome")
+                    raw = _as_number(_text(_find_first(metronome, "per-minute"))) if metronome is not None else None
+                    sound = _find_first(child, "sound")
+                    raw = raw or (_as_number(sound.attrib.get("tempo", "")) if sound is not None else None)
                     if raw is not None:
                         tempo = int(raw)
-                continue
-
-            if tag == "backup":
-                backup_duration = _as_number(_text(_find_first(child, "duration"), "0")) or 0.0
-                measure_cursor -= backup_duration / divisions if divisions else 0.0
-                continue
-
-            if tag == "forward":
-                forward_duration = _as_number(_text(_find_first(child, "duration"), "0")) or 0.0
-                measure_cursor += forward_duration / divisions if divisions else 0.0
+                    continue
+                if tag == "backup":
+                    raw = _as_number(_text(_find_first(child, "duration"), "0")) or 0.0
+                    measure_cursor -= raw / divisions
+                    continue
+                if tag == "forward":
+                    raw = _as_number(_text(_find_first(child, "duration"), "0")) or 0.0
+                    measure_cursor += raw / divisions
+                    measure_max = max(measure_max, measure_cursor)
+                    continue
+                if tag != "note":
+                    continue
+                parsed, measure_cursor = _parse_note_node(
+                    child, cursor_beat=measure_cursor, divisions=divisions,
+                    source_measure=source_measure, part=part_id, chord_anchor=chord_anchor,
+                )
+                if parsed is not None:
+                    measure_notes.append(parsed)
+                    measure_max = max(measure_max, parsed.start_beat + parsed.duration_beat)
                 measure_max = max(measure_max, measure_cursor)
+            measures.append((measure_notes, measure_max, source_measure, measure.attrib.get("implicit") == "yes", active_time_beats))
+        part_measures.append((part_id, measures))
+
+    measure_count = max(len(measures) for _, measures in part_measures)
+    cursor_beat = 0.0
+    for measure_idx in range(measure_count):
+        present = [
+            measures[measure_idx]
+            for _, measures in part_measures
+            if measure_idx < len(measures)
+        ]
+        measure_length = max((item[1] for item in present), default=0.0)
+        for part_id, measures in part_measures:
+            if measure_idx >= len(measures):
+                rhythm_issues.append(f"Measure {measure_idx + 1} missing from part {part_id}.")
                 continue
+            measure_notes, actual, source_measure, implicit, expected = measures[measure_idx]
+            for event in measure_notes:
+                event.start_beat += cursor_beat
+                timeline.append(event)
+                if not event.is_rest and event.midi is not None:
+                    key = (event.part, event.staff, event.voice)
+                    stat = voice_stats.setdefault(key, VoiceStats())
+                    stat.count += 1
+                    stat.pitch_sum += event.midi
+            if expected is not None and not implicit:
+                if actual > expected + 1e-4:
+                    rhythm_issues.append(
+                        f"Measure {source_measure} in part {part_id} exceeds its time "
+                        f"signature ({actual:g} beats, expected {expected:g})."
+                    )
+                elif actual < expected - 1e-4 and not (measure_idx == 0 and actual > 0):
+                    rhythm_issues.append(
+                        f"Measure {source_measure} in part {part_id} is short "
+                        f"({actual:g} beats, expected {expected:g})."
+                    )
+        cursor_beat += measure_length
 
-            if tag != "note":
-                continue
+    if time_signature is None:
+        rhythm_issues.append("Time signature not found; measures aligned by their longest actual duration.")
 
-            parsed, next_cursor = _parse_note_node(
-                child,
-                cursor_beat=measure_cursor,
-                divisions=divisions,
-                source_measure=source_measure,
-                chord_anchor=chord_anchor,
-            )
-            if parsed is None:
-                measure_cursor = next_cursor
-                measure_max = max(measure_max, measure_cursor)
-                continue
+    roles: dict[tuple[str, str, str], Literal["right", "left"]] = {}
+    for key in voice_stats:
+        part_id, staff, _ = key
+        clef = staff_clefs.get((part_id, staff))
+        if clef == "G" or (len(parts) == 1 and clef is None and staff == "1"):
+            roles[key] = "right"
+        elif clef == "F" or (len(parts) == 1 and clef is None and staff == "2"):
+            roles[key] = "left"
+        else:
+            rhythm_issues.append(f"Unsupported or missing clef for part={part_id} staff={staff}; excluded from playback.")
 
-            timeline.append(parsed)
-            measure_cursor = next_cursor
-            measure_max = max(measure_max, parsed.start_beat + parsed.duration_beat, measure_cursor)
-
-            if not parsed.is_rest and parsed.midi is not None:
-                key = (parsed.staff, parsed.voice)
-                current = voice_stats.setdefault(key, VoiceStats())
-                current.count += 1
-                current.pitch_sum += parsed.midi
-
-        cursor_beat = max(cursor_beat, measure_max)
-
-    right_voice = _choose_voice_in_staff(voice_stats, "1")
-    if right_voice is None and voice_stats:
-        right_voice = _choose_lead_voice(voice_stats)
-        if right_voice is not None:
-            warnings.append(
-                "Right-hand staff=1 not found; fallback to detected lead voice "
-                f"staff={right_voice[0]} voice={right_voice[1]}."
-            )
-
-    left_voice = _choose_voice_in_staff(voice_stats, "2")
-    right_staff_voices = {voice for staff, voice in voice_stats if staff == "1"}
-    left_staff_voices = {voice for staff, voice in voice_stats if staff == "2"}
-
+    right_stats = {key: stat for key, stat in voice_stats.items() if roles.get(key) == "right"}
+    right_voice = _choose_lead_voice(right_stats)
     if right_voice is not None:
-        warnings.append(
-            f"Right-hand lead voice selected: staff={right_voice[0]} voice={right_voice[1]}."
-        )
-        if len(right_staff_voices) > 1:
-            warnings.append(
-                f"Detected multi-voice right hand; kept voice {right_voice[1]} on staff=1."
-            )
-    if left_voice is not None:
-        warnings.append(
-            f"Left-hand accompaniment voice selected: staff={left_voice[0]} voice={left_voice[1]}."
-        )
-        if len(left_staff_voices) > 1:
-            warnings.append(
-                f"Detected multi-voice left hand; kept voice {left_voice[1]} on staff=2."
-            )
-    else:
-        warnings.append("Left-hand staff=2 not detected; playback will use right hand only.")
+        warnings.append(f"Right-hand lead voice selected: part={right_voice[0]} staff={right_voice[1]} voice={right_voice[2]}.")
+    for hand in ("right", "left"):
+        hand_identities = [key for key, role in roles.items() if role == hand]
+        if len(hand_identities) > 1:
+            warnings.append(f"Detected multi-voice {hand} hand; retained all voices for playback.")
+    if not any(role == "left" for role in roles.values()):
+        warnings.append("Bass-clef staff not detected; playback will use right hand only.")
 
-    right_timeline = (
-        [event for event in timeline if (event.staff, event.voice) == right_voice]
-        if right_voice is not None
-        else []
-    )
-    left_timeline = (
-        [event for event in timeline if (event.staff, event.voice) == left_voice]
-        if left_voice is not None
-        else []
-    )
-
-    right_timeline.sort(key=lambda event: (event.start_beat, event.source_measure, event.midi or -1))
-    left_timeline.sort(key=lambda event: (event.start_beat, event.source_measure, event.midi or -1))
+    timeline.sort(key=lambda event: (event.start_beat, event.source_measure, event.part, event.staff, event.voice, event.midi or -1))
+    right_timeline = [event for event in timeline if (event.part, event.staff, event.voice) == right_voice]
 
     chord_warning_sent = False
     right_melody_render, chord_warning_sent = _build_render_notes(
@@ -531,40 +546,19 @@ def parse_musicxml(path: Path, *, input_type: str = "png") -> RecognizeResponse:
         chord_warning_sent=chord_warning_sent,
         warnings=warnings,
     )
-    right_playback_render, chord_warning_sent = _build_render_notes(
-        right_timeline,
-        include_chords=True,
-        chord_warning_sent=chord_warning_sent,
-        warnings=warnings,
-    )
-    left_playback_render, _ = _build_render_notes(
-        left_timeline,
-        include_chords=True,
-        chord_warning_sent=chord_warning_sent,
-        warnings=warnings,
-    )
-
     notes = _to_recognized_notes(_merge_ties(right_melody_render))
-    right_playback_notes = _to_recognized_notes(_merge_ties(right_playback_render))
-    left_playback_notes = _to_recognized_notes(_merge_ties(left_playback_render))
-
     playback_events: list[PlaybackEvent] = []
-    if right_voice is not None:
-        playback_events.extend(
-            _to_playback_events(
-                right_playback_notes,
-                hand="right",
-                staff=right_voice[0],
-                voice=right_voice[1],
-            )
+    for identity, hand in roles.items():
+        part_id, staff, voice = identity
+        identity_timeline = [event for event in timeline if (event.part, event.staff, event.voice) == identity]
+        playback_render, chord_warning_sent = _build_render_notes(
+            identity_timeline, include_chords=True,
+            chord_warning_sent=chord_warning_sent, warnings=warnings,
         )
-    if left_voice is not None:
         playback_events.extend(
             _to_playback_events(
-                left_playback_notes,
-                hand="left",
-                staff=left_voice[0],
-                voice=left_voice[1],
+                _to_recognized_notes(_merge_ties(playback_render)), hand=hand,
+                staff=staff if len(parts) == 1 else f"{part_id}:{staff}", voice=voice,
             )
         )
 
@@ -583,8 +577,10 @@ def parse_musicxml(path: Path, *, input_type: str = "png") -> RecognizeResponse:
 
     return RecognizeResponse(
         tempo=tempo,
-        timeSignature=time_signature,
+        timeSignature=time_signature or "4/4",
         notes=notes,
         playbackEvents=playback_events,
-        meta=ResponseMeta(engine="audiveris", inputType=input_type, warnings=warnings),
+        durationBeats=round(cursor_beat, 4),
+        measureCount=measure_count,
+        meta=ResponseMeta(engine="audiveris", inputType=input_type, warnings=[*warnings, *rhythm_issues], rhythmIssues=rhythm_issues),
     )

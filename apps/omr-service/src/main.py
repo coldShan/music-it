@@ -105,7 +105,7 @@ def reset_catalog(confirm: str) -> dict[str, Any]:
 
 
 @app.post("/api/v1/recognize", response_model=RecognizeApiResponse)
-async def recognize(file: list[UploadFile] = File(...)):
+async def recognize(file: list[UploadFile] = File(...), force: bool = False):
     uploads = sorted(file, key=lambda item: _filename_sort_key(item.filename or ""))
     suffixes = [Path(item.filename or "").suffix.lower().lstrip(".") for item in uploads]
     if not uploads or any(suffix not in ALLOWED_EXTENSIONS for suffix in suffixes):
@@ -116,7 +116,7 @@ async def recognize(file: list[UploadFile] = File(...)):
     contents = [await item.read() for item in uploads]
     image_hash = _files_hash(contents, service)
     existing_entry = service.find_by_hash(image_hash)
-    if existing_entry is not None:
+    if existing_entry is not None and not force:
         try:
             touched = service.touch_entry(existing_entry.id)
             detail = service.get_entry(touched.id)
@@ -143,7 +143,7 @@ async def recognize(file: list[UploadFile] = File(...)):
                 page_results.append(recognize_file(page_path, suffix))
             result = merge_recognize_results(page_results)
             first_upload = uploads[0]
-            entry = service.create_entry(
+            entry = service.replace_result(existing_entry.id, result) if existing_entry is not None else service.create_entry(
                 content=contents[0],
                 original_filename=first_upload.filename or f"score.{suffixes[0]}",
                 input_type=result.meta.inputType,

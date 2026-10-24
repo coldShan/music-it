@@ -15,6 +15,7 @@ apps/omr-service/tmp
 apps/omr-service/.pytest_cache
 apps/omr-service/run-logs
 storage/catalog
+storage/repairs
 task_plan.md
 findings.md
 progress.md

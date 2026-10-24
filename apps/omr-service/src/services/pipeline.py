@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 from tempfile import TemporaryDirectory
 import traceback
+import xml.etree.ElementTree as ET
 from uuid import uuid4
 
 from src.models import RecognizeResponse, ResponseMeta
@@ -44,17 +45,19 @@ def merge_recognize_results(results: list[RecognizeResponse]) -> RecognizeRespon
     notes = []
     playback_events = []
     warnings = []
+    rhythm_issues = []
     beat_offset = 0.0
     measure_offset = 0
 
     for result in results:
         page_items = [*result.notes, *result.playbackEvents]
-        page_start = min((item.startBeat for item in page_items), default=0.0)
-        first_measure = min((item.sourceMeasure for item in page_items), default=1)
+        first_measure = 1 if result.measureCount is not None else min(
+            (item.sourceMeasure for item in page_items), default=1
+        )
         notes.extend(
             note.model_copy(
                 update={
-                    "startBeat": round(note.startBeat - page_start + beat_offset, 4),
+                    "startBeat": round(note.startBeat + beat_offset, 4),
                     "sourceMeasure": note.sourceMeasure - first_measure + 1 + measure_offset,
                 }
             )
@@ -63,25 +66,32 @@ def merge_recognize_results(results: list[RecognizeResponse]) -> RecognizeRespon
         playback_events.extend(
             event.model_copy(
                 update={
-                    "startBeat": round(event.startBeat - page_start + beat_offset, 4),
+                    "startBeat": round(event.startBeat + beat_offset, 4),
                     "sourceMeasure": event.sourceMeasure - first_measure + 1 + measure_offset,
                 }
             )
             for event in result.playbackEvents
         )
         warnings.extend(result.meta.warnings)
+        rhythm_issues.extend(result.meta.rhythmIssues)
 
-        if page_items:
-            beat_offset += max(item.startBeat + item.durationBeat for item in page_items) - page_start
-            measure_offset += max(item.sourceMeasure for item in page_items) - first_measure + 1
+        event_end = max((item.startBeat + item.durationBeat for item in page_items), default=0.0)
+        beat_offset += max(result.durationBeats or 0.0, event_end)
+        measure_offset += result.measureCount if result.measureCount is not None else max(
+            (item.sourceMeasure - first_measure + 1 for item in page_items), default=0
+        )
+        if result.durationBeats is None:
+            warnings.append("Page duration unavailable; trailing rests cannot be recovered from legacy note data.")
 
     warnings.append(f"Merged {len(results)} files in filename order.")
     return RecognizeResponse(
+        durationBeats=round(beat_offset, 4),
+        measureCount=measure_offset,
         tempo=results[0].tempo,
         timeSignature=results[0].timeSignature,
         notes=notes,
         playbackEvents=playback_events,
-        meta=ResponseMeta(engine="audiveris", inputType="multi-image", warnings=warnings),
+        meta=ResponseMeta(engine="audiveris", inputType="multi-image", warnings=warnings, rhythmIssues=rhythm_issues),
     )
 
 
@@ -110,6 +120,7 @@ def recognize_file(file_path: Path, input_type: str) -> RecognizeResponse:
             runner = AudiverisRunner()
             attempts = [("base", 1.0), ("up2", 2.0)]
             attempt_errors: list[dict[str, str | float]] = []
+            candidates: list[tuple[RecognizeResponse, str, float]] = []
 
             for attempt_name, scale_factor in attempts:
                 preprocessed = preprocess_image(
@@ -134,21 +145,15 @@ def recognize_file(file_path: Path, input_type: str) -> RecognizeResponse:
                         result.meta.warnings.append(
                             f"Input was upscaled x{scale_factor:.1f} for OMR stability."
                         )
-                    # result.meta.warnings.append(f"Run log: {run_dir}")
-
-                    _write_json(
-                        run_dir / "result-summary.json",
-                        {
-                            "tempo": result.tempo,
-                            "time_signature": result.timeSignature,
-                            "note_count": len(result.notes),
-                            "status": "ok",
-                            "attempt": attempt_name,
-                            "scale_factor": scale_factor,
-                        },
-                    )
-                    return result
-                except OMRPipelineError as exc:
+                    candidates.append((result, attempt_name, scale_factor))
+                    _write_json(run_dir / f"{attempt_name}-quality.json", {
+                        "rhythm_issues": result.meta.rhythmIssues,
+                        "measure_count": result.measureCount,
+                        "note_count": len(result.notes),
+                    })
+                    if not result.meta.rhythmIssues and result.playbackEvents:
+                        break
+                except (OMRPipelineError, ValueError, ET.ParseError) as exc:
                     attempt_errors.append(
                         {
                             "attempt": attempt_name,
@@ -157,6 +162,26 @@ def recognize_file(file_path: Path, input_type: str) -> RecognizeResponse:
                         }
                     )
                     continue
+
+            if candidates:
+                # A shorter export may merely have lost problematic measures.
+                # Compare only complete candidates; ties keep the earlier result.
+                max_measures = max(item[0].measureCount or 0 for item in candidates)
+                complete = [item for item in candidates if (item[0].measureCount or 0) == max_measures]
+                result, attempt_name, scale_factor = min(
+                    complete,
+                    key=lambda item: (not bool(item[0].playbackEvents), len(item[0].meta.rhythmIssues)),
+                )
+                if result.meta.rhythmIssues:
+                    result.meta.warnings.append("节奏校验未通过：已尝试不同分辨率，仍有小节或拍号需要核对原谱；未自动拉伸音长。")
+                _write_json(run_dir / "result-summary.json", {
+                    "tempo": result.tempo, "time_signature": result.timeSignature,
+                    "note_count": len(result.notes), "status": "needs_review" if result.meta.rhythmIssues else "ok",
+                    "attempt": attempt_name, "scale_factor": scale_factor,
+                    "rhythm_issues": result.meta.rhythmIssues,
+                })
+                _write_json(run_dir / "attempt-errors.json", {"attempts": attempt_errors})
+                return result
 
             _write_json(run_dir / "attempt-errors.json", {"attempts": attempt_errors})
             raise OMRPipelineError(

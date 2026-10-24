@@ -38,9 +38,12 @@ class ResponseMeta(BaseModel):
     engine: str = "audiveris"
     inputType: str
     warnings: list[str] = Field(default_factory=list)
+    rhythmIssues: list[str] = Field(default_factory=list)
 
 
 class RecognizeResponse(BaseModel):
+    durationBeats: float | None = Field(default=None, ge=0)
+    measureCount: int | None = Field(default=None, ge=0)
     tempo: int
     timeSignature: str
     notes: list[RecognizedNote]

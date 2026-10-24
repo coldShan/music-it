@@ -33,6 +33,8 @@ export type PlaybackEvent = {
 }
 
 export type RecognizeResponse = {
+  durationBeats?: number | null
+  measureCount?: number | null
   tempo: number
   timeSignature: string
   notes: RecognizedNote[]
@@ -41,6 +43,7 @@ export type RecognizeResponse = {
     engine: string
     inputType: string
     warnings: string[]
+    rhythmIssues?: string[]
   }
 }
 
