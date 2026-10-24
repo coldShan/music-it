@@ -1,81 +1,93 @@
 <script setup lang="ts">
-const filesModel = defineModel<File[]>('files', {
-  default: () => [],
-})
+import { ref } from 'vue'
 
-const filenameCollator = new Intl.Collator(undefined, {
-  numeric: true,
-  sensitivity: 'base',
-})
+const filesModel = defineModel<File[]>('files', { default: () => [] })
+const props = withDefaults(defineProps<{ disabled?: boolean }>(), { disabled: false })
+const errorMessage = ref('')
+const dragging = ref(false)
+const input = ref<HTMLInputElement>()
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+const extensions = new Set(['png', 'jpg', 'jpeg', 'pdf'])
+const mimeTypes = new Set(['image/png', 'image/jpeg', 'application/pdf'])
+
+function setFiles(files: File[]) {
+  const invalid = files.filter((file) => {
+    const extensionAllowed = extensions.has(file.name.split('.').pop()?.toLowerCase() ?? '')
+    return !extensionAllowed || (!!file.type && !mimeTypes.has(file.type))
+  })
+  if (invalid.length) {
+    errorMessage.value = `不支持 ${invalid.map((file) => file.name).join('、')}，请选择 PNG、JPG 或 PDF。`
+    return
+  }
+  errorMessage.value = ''
+  filesModel.value = [...files].sort((a, b) => collator.compare(a.name, b.name))
+}
 
 function onChange(event: Event) {
-  const input = event.target as HTMLInputElement
-  filesModel.value = Array.from(input.files ?? []).sort((left, right) =>
-    filenameCollator.compare(left.name, right.name),
-  )
+  const target = event.target as HTMLInputElement
+  setFiles(Array.from(target.files ?? []))
+  target.value = ''
+}
+
+function onDrop(event: DragEvent) {
+  dragging.value = false
+  if (!props.disabled) setFiles(Array.from(event.dataTransfer?.files ?? []))
+}
+
+function removeFile(index: number) {
+  if (!props.disabled) filesModel.value = filesModel.value.filter((_, current) => current !== index)
 }
 </script>
 
 <template>
-  <label class="upload-field">
-    <span class="upload-title">上传乐谱</span>
-    <input
-      data-testid="recognize-file-input"
-      type="file"
-      accept=".png,.jpg,.jpeg,.pdf"
-      multiple
-      @change="onChange"
-    />
-    <span class="upload-hint">支持多选 PNG / JPG / PDF（PDF 仅第一页），按文件名顺序识别</span>
-    <ol v-if="filesModel.length" class="upload-files">
-      <li v-for="file in filesModel" :key="`${file.name}-${file.size}-${file.lastModified}`">
-        {{ file.name }}
+  <div class="upload-field">
+    <span class="upload-title">选择乐谱文件</span>
+    <div
+      :class="['drop-zone', { dragging, disabled }]"
+      @dragenter.prevent="!disabled && (dragging = true)"
+      @dragover.prevent
+      @dragleave.prevent="dragging = false"
+      @drop.prevent="onDrop"
+    >
+      <input ref="input" data-testid="recognize-file-input" aria-label="选择乐谱文件" tabindex="-1" type="file" accept=".png,.jpg,.jpeg,.pdf" multiple :disabled="disabled" @change="onChange" />
+      <div class="drop-copy">
+        <span class="upload-mark" aria-hidden="true">谱</span>
+        <strong>拖放文件到这里</strong><span>或</span>
+        <button type="button" class="choose-button" :disabled="disabled" @click="input?.click()">浏览文件</button>
+      </div>
+    </div>
+    <p class="upload-hint">支持 PNG、JPG 和 PDF；多页图片会按文件名顺序合并，PDF 仅识别首页。</p>
+    <p v-if="errorMessage" class="local-error" role="alert">{{ errorMessage }}</p>
+    <ol v-if="filesModel.length" class="upload-files" aria-label="已选择文件">
+      <li v-for="(file, index) in filesModel" :key="`${file.name}-${file.size}-${file.lastModified}`">
+        <span class="file-order">{{ String(index + 1).padStart(2, '0') }}</span>
+        <span class="file-name">{{ file.name }}</span>
+        <button type="button" class="remove" :disabled="disabled" :aria-label="`移除 ${file.name}`" @click="removeFile(index)">移除</button>
       </li>
     </ol>
-  </label>
+  </div>
 </template>
 
 <style scoped>
-.upload-field {
-  display: grid;
-  gap: 8px;
-
-  .upload-title {
-    margin: 0;
-    font: 600 16px/1.2 'Noto Sans SC', sans-serif;
-    color: #1b1852;
-  }
-
-  input {
-    border: 1px solid #8b87c8;
-    border-radius: 12px;
-    padding: 10px;
-    background: #fff;
-    color: #221f4d;
-
-    &::file-selector-button {
-      border: 1px solid #25216b;
-      border-radius: 10px;
-      padding: 8px 12px;
-      margin-right: 12px;
-      background: linear-gradient(130deg, #2d2984, #e03f9f);
-      color: #f8f6ff;
-      cursor: pointer;
-    }
-  }
-
-  .upload-hint {
-    color: #605b9a;
-    font-size: 13px;
-  }
-
-  .upload-files {
-    margin: 0;
-    padding-left: 22px;
-    color: #25216b;
-    font-size: 13px;
-    font-weight: 600;
-    word-break: break-all;
-  }
-}
+.upload-field { display: grid; gap: 10px; color: #252923; }
+.upload-title { font-size: 14px; font-weight: 650; }
+.drop-zone { position: relative; min-height: 156px; display: grid; place-items: center; border: 1px dashed #b9bcae; border-radius: 10px; background: #fffefa; transition: border-color .16s ease, background .16s ease; }
+.drop-zone.dragging { border-color: #556348; background: #f1f3ec; }
+.drop-zone.disabled { opacity: .6; cursor: not-allowed; }
+.drop-zone input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.drop-copy { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 7px; padding: 24px; color: #76796f; font-size: 13px; }
+.drop-copy strong { color: #252923; font-size: 14px; }
+.upload-mark { width: 38px; height: 38px; margin-right: 3px; display: grid; place-items: center; border: 1px solid #dedfd5; border-radius: 50%; color: #556348; font-family: 'Noto Serif SC', serif; font-size: 17px; }
+.choose-button, .remove { border: 0; background: transparent; color: #556348; font: inherit; font-weight: 650; cursor: pointer; }
+.choose-button { padding: 4px 2px; text-decoration: underline; text-underline-offset: 3px; }
+button:disabled { cursor: not-allowed; }
+.upload-hint, .local-error { margin: 0; font-size: 12px; line-height: 1.55; }
+.upload-hint { color: #76796f; }
+.local-error { color: #9a3e32; }
+.upload-files { margin: 2px 0 0; padding: 0; list-style: none; border: 1px solid #dedfd5; border-radius: 9px; background: #fffefa; }
+.upload-files li { min-height: 42px; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid #e9e9e2; font-size: 13px; }
+.upload-files li:last-child { border-bottom: 0; }
+.file-order { color: #9a9d93; font-variant-numeric: tabular-nums; }
+.file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.remove { padding: 5px; font-size: 12px; }
 </style>

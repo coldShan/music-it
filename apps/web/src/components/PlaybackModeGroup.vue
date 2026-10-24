@@ -6,10 +6,10 @@ const modeModel = defineModel<PlaybackMode>({
   default: 'both',
 })
 
-const options: Array<{ value: PlaybackMode; label: string; description: string }> = [
-  { value: 'both', label: '双手', description: '左右手' },
-  { value: 'right', label: '只右手', description: '主旋律' },
-  { value: 'left', label: '只左手', description: '伴奏线' },
+const options: Array<{ value: PlaybackMode; label: string }> = [
+  { value: 'both', label: '双手' },
+  { value: 'right', label: '右手' },
+  { value: 'left', label: '左手' },
 ]
 </script>
 
@@ -29,8 +29,7 @@ const options: Array<{ value: PlaybackMode; label: string; description: string }
           :data-testid="`playback-mode-${option.value}`"
           :class="['option', { checked, active }]"
         >
-          <span class="name">{{ option.label }}</span>
-          <span class="description">{{ option.description }}</span>
+          {{ option.label }}
         </button>
       </RadioGroupOption>
     </div>
@@ -38,13 +37,16 @@ const options: Array<{ value: PlaybackMode; label: string; description: string }
 </template>
 
 <style scoped>
-.playback-mode {
+:global(.playback-mode) {
   display: grid;
   gap: 8px;
 
+}
+
+.playback-mode {
   .group-label {
-    color: #4f4888;
-    font-size: 13px;
+    color: #76796f;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.03em;
   }
@@ -52,51 +54,35 @@ const options: Array<{ value: PlaybackMode; label: string; description: string }
   .options {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
+    gap: 0;
+    overflow: hidden;
+    border: 1px solid #dedfd5;
+    border-radius: 9px;
+    background: #fffefa;
 
     .option {
-      border: 1px solid #8e87d0;
-      border-radius: 12px;
-      padding: 10px;
-      background: #fff;
-      color: #2a246b;
+      min-height: 38px;
+      border: 0;
+      border-right: 1px solid #dedfd5;
+      padding: 8px;
+      background: transparent;
+      color: #76796f;
       cursor: pointer;
-      text-align: left;
-      display: grid;
-      gap: 3px;
-      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      font-weight: 650;
+      transition: background .16s ease, color .16s ease;
 
-      .name {
-        font-weight: 700;
-      }
-
-      .description {
-        font-size: 12px;
-        color: #5e5898;
-      }
+      &:last-child { border-right: 0; }
 
       &.active {
-        box-shadow: 0 0 0 2px rgba(76, 56, 210, 0.16);
+        box-shadow: inset 0 0 0 2px #aab2a1;
       }
 
       &.checked {
-        background: linear-gradient(135deg, #2e2785, #dd3f9e);
-        border-color: #2e2785;
-        color: #fff;
-
-        .description {
-          color: #e6dcff;
-        }
+        background: #556348;
+        color: #fffefa;
       }
     }
   }
 }
 
-@media (max-width: 900px) {
-  .playback-mode {
-    .options {
-      grid-template-columns: 1fr;
-    }
-  }
-}
 </style>

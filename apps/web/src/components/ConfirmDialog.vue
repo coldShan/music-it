@@ -9,11 +9,13 @@ const props = withDefaults(
   defineProps<{
     title: string
     description: string
+    errorMessage?: string
     loading?: boolean
     confirmText?: string
     cancelText?: string
   }>(),
   {
+    errorMessage: '',
     loading: false,
     confirmText: '确认',
     cancelText: '取消',
@@ -67,6 +69,7 @@ function onConfirm() {
           <DialogPanel class="panel">
             <DialogTitle class="title">{{ title }}</DialogTitle>
             <p class="description">{{ description }}</p>
+            <p v-if="errorMessage" class="error" role="alert">{{ errorMessage }}</p>
             <div class="actions">
               <button
                 data-testid="confirm-dialog-cancel"
@@ -95,17 +98,20 @@ function onConfirm() {
 </template>
 
 <style scoped>
-.confirm-dialog {
+:global(.confirm-dialog) {
   position: fixed;
   inset: 0;
   z-index: 1200;
   isolation: isolate;
 
+}
+
+.confirm-dialog {
   .overlay {
     position: fixed;
     inset: 0;
     z-index: 0;
-    background: rgba(42, 31, 112, 0.38);
+    background: rgba(37, 41, 35, 0.42);
     backdrop-filter: blur(3px);
   }
 
@@ -120,24 +126,27 @@ function onConfirm() {
 
   .panel {
     width: min(420px, 100%);
-    border-radius: 16px;
-    border: 1px solid #9d95d8;
-    background: #fff;
-    padding: 18px;
-    box-shadow: 0 22px 42px rgba(35, 22, 110, 0.28);
+    max-height: calc(100dvh - 36px);
+    overflow-y: auto;
+    border-radius: 12px;
+    border: 1px solid #dedfd5;
+    background: #f7f6f2;
+    padding: 24px;
+    box-shadow: 0 22px 48px rgba(37, 41, 35, 0.22);
     display: grid;
     gap: 12px;
 
     .title {
       margin: 0;
-      color: #1f1b59;
+      color: #252923;
       font: 700 22px/1.2 'Noto Serif SC', serif;
     }
 
     .description {
       margin: 0;
-      color: #514a86;
+      color: #76796f;
       line-height: 1.5;
+      overflow-wrap: anywhere;
     }
 
     .actions {
@@ -148,16 +157,17 @@ function onConfirm() {
   }
 }
 
+.error { color: #9a3e32; font-size: 13px; line-height: 1.6; }
 button {
-  border: 0;
-  border-radius: 10px;
+  border: 1px solid #dedfd5;
+  border-radius: 9px;
   padding: 10px 14px;
   cursor: pointer;
   font-weight: 600;
-  transition: transform 0.2s ease, opacity 0.2s ease;
+  transition: border-color .16s ease, opacity .16s ease;
 
   &:hover:not(:disabled) {
-    transform: translateY(-1px);
+    border-color: #aeb3a6;
   }
 
   &:disabled {
@@ -166,13 +176,14 @@ button {
   }
 
   &.cancel {
-    color: #312a61;
-    background: #ece9ff;
+    color: #4d5149;
+    background: #fffefa;
   }
 
   &.confirm {
-    color: #fff;
-    background: linear-gradient(130deg, #2c2a85, #e145a4);
+    border-color: #556348;
+    color: #fffefa;
+    background: #556348;
   }
 }
 </style>

@@ -11,6 +11,8 @@ type PlaybackOptions = {
   leftHandInstrument: InstrumentId
 }
 
+let playbackRequest = 0
+const activePlayers = new Set<Soundfont.Player>()
 let part: Tone.Part | null = null
 let toneSynth: Tone.PolySynth | null = null
 type SoundfontInstrumentId = Exclude<InstrumentId, 'toneSynth'>
@@ -99,9 +101,10 @@ export async function playScore(options: PlaybackOptions): Promise<string[]> {
     return warnings
   }
 
-  await Tone.start()
-
   stopScore()
+  const request = playbackRequest
+  await Tone.start()
+  if (request !== playbackRequest) return warnings
 
   Tone.getTransport().bpm.value = tempo
 
@@ -121,7 +124,9 @@ export async function playScore(options: PlaybackOptions): Promise<string[]> {
     }
 
     const loaded = await loadInstrumentWithFallback(instrumentId)
+    if (request !== playbackRequest) return warnings
     players.set(instrumentId, loaded.player)
+    activePlayers.add(loaded.player)
     if (loaded.warning) {
       warnings.push(loaded.warning)
     }
@@ -159,7 +164,21 @@ export async function playScore(options: PlaybackOptions): Promise<string[]> {
   return warnings
 }
 
+export function getPlaybackSeconds(): number {
+  return Tone.getTransport().seconds
+}
+
+export function seekScore(seconds: number): void {
+  if (!part || !Number.isFinite(seconds)) return
+  for (const player of activePlayers) player.stop()
+  toneSynth?.releaseAll()
+  Tone.getTransport().seconds = Math.max(0, seconds)
+}
+
 export function stopScore(): void {
+  playbackRequest += 1
+  for (const player of activePlayers) player.stop()
+  activePlayers.clear()
   if (part) {
     part.stop()
     part.dispose()

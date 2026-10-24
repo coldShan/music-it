@@ -39,7 +39,7 @@ const selectedLabel = computed(() => {
       <div class="surface">
         <ListboxButton :data-testid="`${testIdPrefix}-button`" class="button">
           <span>{{ selectedLabel }}</span>
-          <span class="arrow">▾</span>
+          <span class="arrow" aria-hidden="true">⌄</span>
         </ListboxButton>
         <ListboxOptions class="options">
           <ListboxOption
@@ -53,7 +53,8 @@ const selectedLabel = computed(() => {
               :data-testid="`${testIdPrefix}-option-${option.value}`"
               :class="['option', { active, selected }]"
             >
-              {{ option.label }}
+              <span>{{ option.label }}</span>
+              <span v-if="selected" aria-hidden="true">✓</span>
             </li>
           </ListboxOption>
         </ListboxOptions>
@@ -68,8 +69,8 @@ const selectedLabel = computed(() => {
   gap: 8px;
 
   .label {
-    color: #4e4787;
-    font-size: 13px;
+    color: #76796f;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.03em;
   }
@@ -79,47 +80,56 @@ const selectedLabel = computed(() => {
 
     .button {
       width: 100%;
-      border: 1px solid #8e87d0;
-      border-radius: 12px;
-      background: #fff;
-      color: #211d57;
-      padding: 10px 12px;
+      min-height: 40px;
+      border: 1px solid #dedfd5;
+      border-radius: 9px;
+      background: #fffefa;
+      color: #252923;
+      padding: 8px 11px;
+      font-size: 13px;
       font-weight: 600;
       display: flex;
       justify-content: space-between;
       align-items: center;
       cursor: pointer;
+      transition: border-color .16s ease;
+
+      &:hover:not(:disabled) { border-color: #bfc3b7; }
+      &:disabled { opacity: .55; cursor: not-allowed; }
+      .arrow { color: #76796f; font-size: 16px; }
     }
 
     .options {
       position: absolute;
       z-index: 20;
-      margin: 6px 0 0;
+      margin: 5px 0 0;
       width: 100%;
-      border: 1px solid #8e87d0;
-      border-radius: 12px;
-      background: #fff;
-      box-shadow: 0 16px 28px rgba(45, 34, 128, 0.2);
+      border: 1px solid #dedfd5;
+      border-radius: 9px;
+      background: #fffefa;
+      box-shadow: 0 12px 28px rgba(37, 41, 35, .12);
       list-style: none;
-      padding: 8px;
+      padding: 5px;
       display: grid;
       gap: 4px;
       max-height: 220px;
       overflow-y: auto;
 
       .option {
-        border-radius: 8px;
-        padding: 8px 10px;
-        color: #221f57;
+        display: flex;
+        justify-content: space-between;
+        border-radius: 6px;
+        padding: 8px 9px;
+        color: #4e524a;
         cursor: pointer;
 
         &.active {
-          background: #efebff;
+          background: #f0f1eb;
         }
 
         &.selected {
           font-weight: 700;
-          color: #2c2488;
+          color: #556348;
         }
       }
     }

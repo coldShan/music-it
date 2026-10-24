@@ -43,35 +43,37 @@ defineProps<{
   z-index: 0;
   isolation: isolate;
   overflow: auto;
-  border: 1px solid #8d86cf;
-  border-radius: 14px;
-  background: #fff;
+  border: 1px solid #dedfd5;
+  border-radius: 10px;
+  background: #fffefa;
   max-height: 460px;
 
   table {
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
-    color: #29235f;
+    color: #4c5048;
 
     th,
     td {
       text-align: left;
-      padding: 10px;
-      border-bottom: 1px solid #e5e0fb;
+      padding: 10px 12px;
+      border-bottom: 1px solid #e9e9e2;
+      font-variant-numeric: tabular-nums;
     }
 
     thead th {
       position: sticky;
       top: 0;
       z-index: 2;
-      background: #f3efff;
+      background: #f1f0eb;
+      color: #252923;
       font-weight: 700;
       letter-spacing: 0.02em;
     }
 
     tbody tr:hover {
-      background: #faf8ff;
+      background: #f5f5f0;
     }
   }
 }

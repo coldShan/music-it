@@ -16,18 +16,36 @@ async function parseJsonOrThrow(response: Response) {
   return response.json()
 }
 
-export async function recognizeScore(files: File[]): Promise<RecognizeApiResponse> {
+export async function recognizeScore(files: File[], force = false, onUploadProgress?: (percent: number | null) => void): Promise<RecognizeApiResponse> {
   const formData = new FormData()
   for (const file of files) {
     formData.append('file', file)
   }
 
-  const response = await fetch(`${BASE_URL}/api/v1/recognize`, {
-    method: 'POST',
-    body: formData,
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest()
+    request.open('POST', `${BASE_URL}/api/v1/recognize${force ? '?force=true' : ''}`)
+    request.upload.onprogress = (event) => {
+      onUploadProgress?.(event.lengthComputable && event.total > 0
+        ? Math.min(99, Math.floor(event.loaded / event.total * 100)) : null)
+    }
+    request.upload.onload = () => onUploadProgress?.(100)
+    request.onerror = () => reject(new Error('网络连接失败，请重试。'))
+    request.onabort = () => reject(new Error('导入已取消。'))
+    request.onload = () => {
+      try {
+        const body = JSON.parse(request.responseText)
+        if (request.status < 200 || request.status >= 300) {
+          reject(new Error(typeof body?.detail === 'string' ? body.detail : 'Request failed'))
+          return
+        }
+        resolve(body as RecognizeApiResponse)
+      } catch {
+        reject(new Error('服务器返回了无效响应，请重试。'))
+      }
+    }
+    request.send(formData)
   })
-
-  return (await parseJsonOrThrow(response)) as RecognizeApiResponse
 }
 
 export async function listCatalogEntries(): Promise<CatalogEntrySummary[]> {

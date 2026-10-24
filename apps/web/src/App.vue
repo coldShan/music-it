@@ -1,791 +1,356 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/vue'
-import type {
-  CatalogEntryDetail,
-  CatalogEntrySummary,
-  InstrumentId,
-  PlaybackEvent,
-  RecognizeApiResponse,
-  RecognizeResponse,
-} from '@music-it/shared-types'
-
-import { instrumentLabelMap, instrumentOptions } from './constants/instruments'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import type { CatalogEntrySummary, InstrumentId, PlaybackEvent, RecognizeResponse } from '@music-it/shared-types'
+import { instrumentOptions } from './constants/instruments'
 import CatalogList from './components/CatalogList.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import InstrumentListbox from './components/InstrumentListbox.vue'
 import PlaybackModeGroup from './components/PlaybackModeGroup.vue'
 import RecognizeDialog from './components/RecognizeDialog.vue'
 import ResultTable from './components/ResultTable.vue'
-import {
-  deleteCatalogEntry,
-  getCatalogEntry,
-  listCatalogEntries,
-  recognizeScore,
-  resetCatalog,
-  updateCatalogEntry,
-} from './services/api'
-import { filterPlaybackEvents, playScore, stopScore, type PlaybackMode } from './services/player'
+import ScorePreview from './components/ScorePreview.vue'
+import { deleteCatalogEntry, getCatalogEntry, listCatalogEntries, recognizeScore, resetCatalog, updateCatalogEntry } from './services/api'
+import { filterPlaybackEvents, getPlaybackSeconds, playScore, seekScore, stopScore, type PlaybackMode } from './services/player'
+import './style.css'
 
+const view = ref<'library' | 'studio'>('library')
 const selectedFiles = ref<File[]>([])
 const recognizeDialogOpen = ref(false)
 const confirmResetOpen = ref(false)
+const pendingDelete = ref<CatalogEntrySummary | null>(null)
+const confirmDeleteOpen = computed({ get: () => !!pendingDelete.value, set: (open) => { if (!open) pendingDelete.value = null } })
 const loading = ref(false)
+const uploadProgress = ref<number | null>(0)
+const importStatus = ref('')
 const errorMessage = ref('')
+const recognizeError = ref('')
 const result = ref<RecognizeResponse | null>(null)
 const autoPlayMessage = ref('')
-const recognizeStatus = ref('')
-
 const catalogEntries = ref<CatalogEntrySummary[]>([])
 const catalogLoading = ref(false)
+const catalogError = ref('')
 const activeCatalogId = ref<string | null>(null)
+const loadedTitle = ref('')
+const entryLoading = ref(false)
 const resetLoading = ref(false)
+const deleteLoading = ref(false)
 const instrumentSaving = ref(false)
 const playbackMode = ref<PlaybackMode>('both')
 const melodyInstrument = ref<InstrumentId>('toneSynth')
 const leftHandInstrument = ref<InstrumentId>('toneSynth')
-
+const settingsOpen = ref(false)
 const editingCatalogId = ref<string | null>(null)
 const editingCatalogTitle = ref('')
+const search = ref('')
+const sort = ref('recent')
+const isPlaying = ref(false)
+const playbackLoading = ref(false)
+const elapsed = ref(0)
+const playingDuration = ref(0)
+let playbackTimer: ReturnType<typeof setInterval> | undefined
+let selectionRequest = 0
+let playRequest = 0
 
-const sidebarDefaultOpen =
-  typeof window === 'undefined' || typeof window.matchMedia !== 'function'
-    ? true
-    : window.matchMedia('(min-width: 769px)').matches
-
-const activeCatalogEntry = computed(() => {
-  if (!activeCatalogId.value) {
-    return null
-  }
-  return catalogEntries.value.find((entry) => entry.id === activeCatalogId.value) ?? null
+const visibleEntries = computed(() => {
+  const query = search.value.trim().toLocaleLowerCase()
+  return catalogEntries.value.filter(entry => entry.title.toLocaleLowerCase().includes(query)).sort((a, b) =>
+    sort.value === 'title' ? a.title.localeCompare(b.title, 'zh-CN', { numeric: true }) : b.createdAt.localeCompare(a.createdAt),
+  )
 })
-
-const activeTitle = computed(() => {
-  return activeCatalogEntry.value?.title ?? (result.value ? '当前识别结果' : '尚未加载曲目')
-})
-
-function fallbackPlaybackEventsFromNotes(scoreNotes: RecognizeResponse['notes']): PlaybackEvent[] {
-  return scoreNotes.map((note) => ({
-    startBeat: note.startBeat,
-    durationBeat: note.durationBeat,
-    gateBeat: note.gateBeat,
-    pitches: [note.pitch],
-    midis: [note.midi],
-    hand: 'right',
-    staff: '1',
-    voice: '1',
-    sourceMeasure: note.sourceMeasure,
-  }))
+const activeTitle = computed(() => catalogEntries.value.find(entry => entry.id === activeCatalogId.value)?.title || loadedTitle.value || '当前曲目')
+function fallbackEvents(notes: RecognizeResponse['notes']): PlaybackEvent[] {
+  return notes.map(note => ({ ...note, pitches: [note.pitch], midis: [note.midi], hand: 'right', staff: '1', voice: '1' }))
 }
-
-const resolvedPlaybackEvents = computed(() => {
-  if (!result.value) {
-    return [] as PlaybackEvent[]
-  }
-  if (result.value.playbackEvents?.length) {
-    return result.value.playbackEvents
-  }
-  return fallbackPlaybackEventsFromNotes(result.value.notes)
-})
-
-const canPlay = computed(() => !!resolvedPlaybackEvents.value.length)
-const melodyInstrumentLabel = computed(() => instrumentLabelMap[melodyInstrument.value])
-const leftHandInstrumentLabel = computed(() => instrumentLabelMap[leftHandInstrument.value])
-
+const resolvedPlaybackEvents = computed(() => result.value?.playbackEvents?.length ? result.value.playbackEvents : fallbackEvents(result.value?.notes ?? []))
+const canPlay = computed(() => !!resolvedPlaybackEvents.value.length && !loading.value && !entryLoading.value && !instrumentSaving.value)
+function durationOf(events: PlaybackEvent[], tempo: number) {
+  return events.reduce((end, event) => Math.max(end, event.startBeat + Math.max(event.durationBeat, event.gateBeat)), 0) * 60 / tempo
+}
+const duration = computed(() => result.value ? Math.max(durationOf(resolvedPlaybackEvents.value, result.value.tempo), (result.value.durationBeats ?? 0) * 60 / result.value.tempo) : 0)
+const progress = computed(() => duration.value ? Math.min(100, elapsed.value / duration.value * 100) : 0)
+function onSeek(event: Event) {
+  if (!isPlaying.value || playbackLoading.value) return
+  const seconds = Number((event.target as HTMLInputElement).value)
+  if (!Number.isFinite(seconds)) return
+  elapsed.value = Math.max(0, Math.min(duration.value, seconds))
+  seekScore(elapsed.value)
+}
+function formatTime(seconds: number) {
+  const value = Math.max(0, Math.floor(seconds))
+  return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, '0')}`
+}
 function openRecognizeDialog() {
+  recognizeError.value = ''
   recognizeDialogOpen.value = true
-  recognizeStatus.value = ''
 }
-
-function toRecognizeResponse(response: RecognizeApiResponse): RecognizeResponse {
-  return {
-    tempo: response.tempo,
-    timeSignature: response.timeSignature,
-    notes: response.notes,
-    playbackEvents: response.playbackEvents ?? [],
-    meta: response.meta,
-  }
-}
-
-function deriveTitleFromFile(file: File | undefined): string {
-  if (!file) {
-    return ''
-  }
-  const fileName = file.name.trim()
-  const stripped = fileName.replace(/\.[^/.]+$/, '').trim()
-  return stripped || fileName
-}
-
-function applyCatalogInstruments(melody: InstrumentId, left: InstrumentId) {
-  melodyInstrument.value = melody
-  leftHandInstrument.value = left
-}
-
 async function refreshCatalog() {
   catalogLoading.value = true
-  try {
-    catalogEntries.value = await listCatalogEntries()
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '目录加载失败'
-  } finally {
-    catalogLoading.value = false
-  }
+  catalogError.value = ''
+  try { catalogEntries.value = await listCatalogEntries() }
+  catch (error) { catalogError.value = error instanceof Error ? error.message : '曲库加载失败' }
+  finally { catalogLoading.value = false }
 }
-
-async function playWithCurrentSettings(tempo: number, events: PlaybackEvent[]) {
+function onStop() {
+  playRequest += 1
+  stopScore()
+  clearInterval(playbackTimer)
+  isPlaying.value = false
+  playbackLoading.value = false
+  elapsed.value = 0
+}
+async function onPlay() {
+  if (!result.value || !canPlay.value || playbackLoading.value) return
+  onStop()
+  const request = playRequest
+  const events = resolvedPlaybackEvents.value
   const filtered = filterPlaybackEvents(events, playbackMode.value)
-  if (!filtered.length) {
-    autoPlayMessage.value =
-      playbackMode.value === 'left' ? '当前曲目无左手事件。' : '当前播放模式下没有可播放事件。'
-    return
-  }
-
-  const warnings = await playScore({
-    tempo,
-    playbackEvents: events,
-    mode: playbackMode.value,
-    melodyInstrument: melodyInstrument.value,
-    leftHandInstrument: leftHandInstrument.value,
-  })
-  autoPlayMessage.value = warnings[0] ?? ''
-}
-
-async function onRecognize() {
-  if (!selectedFiles.value.length) {
-    errorMessage.value = '请先选择谱面文件。'
-    recognizeStatus.value = '请选择文件后再识别。'
-    return
-  }
-
-  loading.value = true
-  errorMessage.value = ''
   autoPlayMessage.value = ''
-  recognizeStatus.value = '识别中，请稍候...'
-
+  if (!filtered.length) {
+    autoPlayMessage.value = '这个声部没有可播放的音符，请尝试其他声部。'
+    return
+  }
+  playbackLoading.value = true
   try {
-    const files = selectedFiles.value
-    const response = await recognizeScore(files)
-    result.value = toRecognizeResponse(response)
+    const warnings = await playScore({ tempo: result.value.tempo, playbackEvents: events, mode: playbackMode.value, melodyInstrument: melodyInstrument.value, leftHandInstrument: leftHandInstrument.value })
+    if (request !== playRequest) return
+    autoPlayMessage.value = warnings[0] ?? ''
+    playingDuration.value = duration.value
+    isPlaying.value = true
+    playbackTimer = setInterval(() => {
+      elapsed.value = getPlaybackSeconds()
+      if (elapsed.value >= playingDuration.value + 0.1) {
+        stopScore()
+        clearInterval(playbackTimer)
+        isPlaying.value = false
+        elapsed.value = playingDuration.value
+      }
+    }, 100)
+  } catch (error) {
+    if (request === playRequest) autoPlayMessage.value = error instanceof Error ? error.message : '播放失败，请重试。'
+  } finally { if (request === playRequest) playbackLoading.value = false }
+}
+async function onRecognize(force = false) {
+  if (loading.value || !selectedFiles.value.length) return
+  loading.value = true
+  uploadProgress.value = 0
+  importStatus.value = '正在上传乐谱…'
+  recognizeError.value = ''
+  errorMessage.value = ''
+  onStop()
+  selectionRequest += 1
+  entryLoading.value = false
+  try {
+    const files = [...selectedFiles.value]
+    const response = await recognizeScore(files, force, (percent) => {
+      uploadProgress.value = percent === 100 ? null : percent
+      importStatus.value = percent === 100
+        ? '正在识别谱面，复杂乐谱可能需要几分钟。'
+        : '正在上传乐谱…'
+    })
+    uploadProgress.value = null
+    importStatus.value = '识别完成，正在整理曲库…'
+    result.value = response
     activeCatalogId.value = response.catalogEntryId
-    applyCatalogInstruments(response.melodyInstrument, response.leftHandInstrument)
-    await refreshCatalog()
-
-    const preferredTitle = deriveTitleFromFile(files[0])
-    if (preferredTitle && preferredTitle !== response.catalogTitle) {
+    loadedTitle.value = response.catalogTitle
+    melodyInstrument.value = response.melodyInstrument
+    leftHandInstrument.value = response.leftHandInstrument
+    const preferredTitle = files[0].name.replace(/\.[^/.]+$/, '').trim()
+    if (!force && !response.isReused && preferredTitle && preferredTitle !== response.catalogTitle) {
       try {
         await updateCatalogEntry(response.catalogEntryId, { title: preferredTitle })
-        await refreshCatalog()
-      } catch {
-        errorMessage.value = '默认曲目名更新失败，请手动重命名。'
-      }
-    }
-
-    const playbackEvents =
-      response.playbackEvents?.length ? response.playbackEvents : fallbackPlaybackEventsFromNotes(response.notes)
-
-    if (playbackEvents.length) {
-      try {
-        await playWithCurrentSettings(response.tempo, playbackEvents)
-      } catch (error) {
-        autoPlayMessage.value =
-          error instanceof Error ? error.message : '浏览器阻止了自动播放，请点击“播放”按钮。'
-      }
-    }
-
-    recognizeDialogOpen.value = false
-    recognizeStatus.value = ''
-    selectedFiles.value = []
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '识别失败'
-    recognizeStatus.value = '识别失败，请检查文件后重试。'
-    result.value = null
-  } finally {
-    loading.value = false
-  }
-}
-
-async function onPlay() {
-  if (!result.value || !resolvedPlaybackEvents.value.length) {
-    return
-  }
-  await playWithCurrentSettings(result.value.tempo, resolvedPlaybackEvents.value)
-}
-
-async function onPlayFromCatalog(entryId: string) {
-  errorMessage.value = ''
-  autoPlayMessage.value = ''
-
-  try {
-    const detail: CatalogEntryDetail = await getCatalogEntry(entryId)
-    result.value = detail.result
-    activeCatalogId.value = detail.id
-    applyCatalogInstruments(detail.melodyInstrument, detail.leftHandInstrument)
-    const playbackEvents =
-      detail.result.playbackEvents?.length
-        ? detail.result.playbackEvents
-        : fallbackPlaybackEventsFromNotes(detail.result.notes)
-    await playWithCurrentSettings(detail.result.tempo, playbackEvents)
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '播放失败'
-  }
-}
-
-async function onDeleteFromCatalog(entryId: string) {
-  errorMessage.value = ''
-
-  try {
-    await deleteCatalogEntry(entryId)
-    if (activeCatalogId.value === entryId) {
-      stopScore()
-      activeCatalogId.value = null
-      result.value = null
+        loadedTitle.value = preferredTitle
+      } catch { errorMessage.value = '乐谱已保存，但曲名更新失败，可在曲库中重命名。' }
     }
     await refreshCatalog()
+    view.value = 'studio'
+    settingsOpen.value = false
+    autoPlayMessage.value = ''
+    recognizeDialogOpen.value = false
+    selectedFiles.value = []
+  } catch (error) { recognizeError.value = error instanceof Error ? error.message : '识别失败，请重试。' }
+  finally { loading.value = false }
+}
+async function openEntry(entryId: string, autoplay = false) {
+  const request = ++selectionRequest
+  onStop()
+  entryLoading.value = true
+  errorMessage.value = ''
+  autoPlayMessage.value = ''
+  try {
+    const detail = await getCatalogEntry(entryId)
+    if (request !== selectionRequest) return
+    result.value = detail.result
+    activeCatalogId.value = detail.id
+    loadedTitle.value = detail.title
+    melodyInstrument.value = detail.melodyInstrument
+    leftHandInstrument.value = detail.leftHandInstrument
+    view.value = 'studio'
+    settingsOpen.value = false
+    entryLoading.value = false
+    if (autoplay) await onPlay()
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '删除失败'
-  }
+    if (request === selectionRequest) errorMessage.value = error instanceof Error ? error.message : '曲目加载失败'
+  } finally { if (request === selectionRequest) entryLoading.value = false }
 }
-
-function onRequestResetCatalog() {
-  confirmResetOpen.value = true
+async function onConfirmDelete() {
+  if (!pendingDelete.value || deleteLoading.value) return
+  deleteLoading.value = true
+  errorMessage.value = ''
+  try {
+    const entryId = pendingDelete.value.id
+    await deleteCatalogEntry(entryId)
+    if (activeCatalogId.value === entryId) { onStop(); activeCatalogId.value = null; result.value = null; view.value = 'library' }
+    pendingDelete.value = null
+    await refreshCatalog()
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '删除失败' }
+  finally { deleteLoading.value = false }
 }
-
 async function onConfirmResetCatalog() {
+  if (resetLoading.value) return
   resetLoading.value = true
   errorMessage.value = ''
-
   try {
     await resetCatalog('WIPE_CATALOG')
-    stopScore()
+    selectionRequest += 1
+    onStop()
     result.value = null
     activeCatalogId.value = null
     confirmResetOpen.value = false
+    view.value = 'library'
     await refreshCatalog()
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '目录重置失败'
-  } finally {
-    resetLoading.value = false
-  }
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '曲库清空失败' }
+  finally { resetLoading.value = false }
 }
-
 async function onInstrumentChange(hand: 'melody' | 'left', value: InstrumentId) {
+  if (instrumentSaving.value) return
   const previousMelody = melodyInstrument.value
   const previousLeft = leftHandInstrument.value
-
-  if (hand === 'melody') {
-    melodyInstrument.value = value
-  } else {
-    leftHandInstrument.value = value
-  }
-
-  if (!activeCatalogId.value) {
-    return
-  }
-
+  if (hand === 'melody') melodyInstrument.value = value
+  else leftHandInstrument.value = value
+  if (!activeCatalogId.value) return
+  const entryId = activeCatalogId.value
   instrumentSaving.value = true
   errorMessage.value = ''
   try {
-    await updateCatalogEntry(activeCatalogId.value, {
-      melodyInstrument: melodyInstrument.value,
-      leftHandInstrument: leftHandInstrument.value,
-    })
+    await updateCatalogEntry(entryId, { melodyInstrument: melodyInstrument.value, leftHandInstrument: leftHandInstrument.value })
     await refreshCatalog()
   } catch (error) {
-    melodyInstrument.value = previousMelody
-    leftHandInstrument.value = previousLeft
-    errorMessage.value = error instanceof Error ? error.message : '音色保存失败，已回退显示'
-  } finally {
-    instrumentSaving.value = false
-  }
+    if (entryId === activeCatalogId.value) { melodyInstrument.value = previousMelody; leftHandInstrument.value = previousLeft }
+    errorMessage.value = error instanceof Error ? error.message : '音色保存失败，已恢复原设置'
+  } finally { instrumentSaving.value = false }
 }
-
-function onStop() {
-  stopScore()
-}
-
-function onStartRename(entryId: string, currentTitle: string) {
-  editingCatalogId.value = entryId
-  editingCatalogTitle.value = currentTitle
-}
-
-function onCancelRename() {
-  editingCatalogId.value = null
-  editingCatalogTitle.value = ''
-}
-
+function onStartRename(entryId: string, title: string) { editingCatalogId.value = entryId; editingCatalogTitle.value = title }
+function onCancelRename() { editingCatalogId.value = null; editingCatalogTitle.value = '' }
 async function onCommitRename(entryId: string, title: string) {
   const nextTitle = title.trim()
-  const currentTitle = catalogEntries.value.find((entry) => entry.id === entryId)?.title ?? ''
-
-  if (!nextTitle || nextTitle === currentTitle) {
-    onCancelRename()
-    return
-  }
-
+  if (!nextTitle || nextTitle === catalogEntries.value.find(entry => entry.id === entryId)?.title) { onCancelRename(); return }
   try {
     await updateCatalogEntry(entryId, { title: nextTitle })
     await refreshCatalog()
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '重命名失败'
-  } finally {
     onCancelRename()
-  }
+  } catch (error) { errorMessage.value = error instanceof Error ? error.message : '重命名失败，请重试' }
 }
-
-onMounted(() => {
-  void refreshCatalog()
-})
+watch(view, () => { window.scrollTo({ top: 0, behavior: 'instant' }) })
+watch(playbackMode, onStop)
+onMounted(() => { void refreshCatalog() })
+onUnmounted(() => { selectionRequest += 1; onStop() })
 </script>
 
 <template>
-  <main class="screen">
-    <section class="hero">
-      <p class="kicker">Music It Stage</p>
-      <h1>乐谱识别与自动回放台</h1>
-      <p class="description">主区专注当前曲目与播放控制，目录与识别细节在两侧协同展示。</p>
-      <button data-testid="open-recognize-dialog" type="button" class="open-dialog" @click="openRecognizeDialog">
-        上传并识别
-      </button>
-    </section>
+  <div class="app-shell" :class="{ 'has-player': result }">
+    <header class="site-header">
+      <a href="#" class="brand" aria-label="Music It 首页" @click.prevent="view = 'library'">
+        <span class="brand-mark" aria-hidden="true">m<span>ı</span></span><span>music it<span class="brand-dot">.</span></span>
+      </a>
+      <nav aria-label="主导航">
+        <button :class="{ selected: view === 'library' }" :aria-current="view === 'library' ? 'page' : undefined" @click="view = 'library'">我的曲库</button>
+        <button :class="{ selected: view === 'studio' }" :aria-current="view === 'studio' ? 'page' : undefined" :disabled="!result" @click="view = 'studio'">试听室</button>
+      </nav>
+      <span class="header-note">A LITTLE SPACE FOR MUSIC</span>
+    </header>
 
-    <section class="layout">
-      <Disclosure as="aside" class="catalog-sidebar" :default-open="sidebarDefaultOpen" v-slot="{ open }">
-        <div class="sidebar-head">
-          <h2>历史目录</h2>
-          <DisclosureButton data-testid="catalog-toggle" class="toggle">
-            {{ open ? '收起目录' : '展开目录' }}
-          </DisclosureButton>
-        </div>
+    <main id="main-content" class="workspace">
+      <div v-if="errorMessage" class="notice error-notice" role="alert"><span>{{ errorMessage }}</span><button aria-label="关闭提示" @click="errorMessage = ''">×</button></div>
+      <div v-if="entryLoading" class="notice" role="status">正在打开乐谱…</div>
 
-        <DisclosurePanel class="sidebar-panel">
-          <CatalogList
-            :entries="catalogEntries"
-            :loading="catalogLoading"
-            :active-id="activeCatalogId"
-            :instrument-label-map="instrumentLabelMap"
-            :editing-id="editingCatalogId"
-            :editing-title="editingCatalogTitle"
-            @play="onPlayFromCatalog"
-            @delete="onDeleteFromCatalog"
-            @start-rename="onStartRename"
-            @update-editing-title="editingCatalogTitle = $event"
-            @commit-rename="onCommitRename"
-            @cancel-rename="onCancelRename"
-          />
-
-          <button
-            type="button"
-            class="reset-catalog"
-            :disabled="catalogLoading || resetLoading"
-            data-testid="catalog-reset"
-            @click="onRequestResetCatalog"
-          >
-            {{ resetLoading ? '重置中...' : '清空目录' }}
-          </button>
-        </DisclosurePanel>
-      </Disclosure>
-
-      <section class="primary">
-        <article class="current">
-          <p class="label">当前播放曲目</p>
-          <h2>{{ activeTitle }}</h2>
-          <p class="status" v-if="result">Tempo {{ result.tempo }} BPM · 拍号 {{ result.timeSignature }}</p>
-          <p class="status" v-else>尚未开始识别</p>
-        </article>
-
-        <PlaybackModeGroup v-model="playbackMode" />
-
-        <div class="instrument-grid">
-          <InstrumentListbox
-            test-id-prefix="melody-instrument"
-            label="主旋律音色"
-            :model-value="melodyInstrument"
-            :options="instrumentOptions"
-            :disabled="instrumentSaving"
-            @update:model-value="onInstrumentChange('melody', $event)"
-          />
-          <InstrumentListbox
-            test-id-prefix="left-instrument"
-            label="左手音色"
-            :model-value="leftHandInstrument"
-            :options="instrumentOptions"
-            :disabled="instrumentSaving"
-            @update:model-value="onInstrumentChange('left', $event)"
-          />
-        </div>
-
-        <div class="player-actions">
-          <button data-testid="main-play" type="button" class="play" :disabled="!canPlay" @click="onPlay">播放</button>
-          <button data-testid="main-stop" type="button" class="stop" @click="onStop">停止</button>
-        </div>
-
-        <p class="hint">
-          当前音色：旋律 {{ melodyInstrumentLabel }}，左手 {{ leftHandInstrumentLabel }}（切换后下次播放生效）
-        </p>
-
-        <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
-        <p v-if="autoPlayMessage" class="hint">{{ autoPlayMessage }}</p>
-      </section>
-
-      <aside class="details">
-        <h2>识别详情</h2>
-
-        <template v-if="result">
-          <div class="meta">
-            <p>音符数 {{ result.notes.length }}</p>
-            <p>播放事件 {{ resolvedPlaybackEvents.length }}</p>
-            <p>引擎 {{ result.meta.engine }}</p>
+      <template v-if="view === 'library'">
+        <section class="page-heading"><div><p class="eyebrow">YOUR PERSONAL COLLECTION</p><h1>我的曲库<span class="heading-dot">.</span></h1></div><span class="collection-note">让每一张乐谱，都能被听见。</span></section>
+        <section class="welcome" :class="{ 'has-collection': catalogEntries.length }">
+          <div class="welcome-copy">
+            <p class="eyebrow">FROM PAPER TO MELODY</p>
+            <h2>纸上的音符，<br>耳边的旋律。</h2>
+            <p class="welcome-description">导入你的乐谱，把旋律交给 Music It。<br>聆听全曲，也可以一次只练一只手。</p>
+            <button class="button primary" data-testid="open-recognize-dialog" @click="openRecognizeDialog"><span aria-hidden="true">＋</span> 导入乐谱 <span aria-hidden="true">↗</span></button>
+            <p class="format-hint">PNG、JPG 或 PDF · 支持多页图片</p>
           </div>
+          <div class="score-art" aria-hidden="true">
+            <div class="art-circle"></div>
+            <div class="paper-sheet">
+              <div class="paper-heading"><span>Music It</span><span>NO. 001</span></div>
+              <p class="paper-title">A quiet little melody</p><p class="paper-subtitle">Andante · con amore</p>
+              <svg viewBox="0 0 360 180" fill="none"><g stroke="currentColor" stroke-width=".8" opacity=".4"><path d="M15 35H345M15 45H345M15 55H345M15 65H345M15 75H345M15 115H345M15 125H345M15 135H345M15 145H345M15 155H345"/><path d="M125 35V75M235 35V75M345 35V75M125 115V155M235 115V155M345 115V155"/></g><g fill="currentColor"><ellipse cx="65" cy="65" rx="6" ry="4" transform="rotate(-20 65 65)"/><ellipse cx="95" cy="55" rx="6" ry="4"/><ellipse cx="150" cy="60" rx="6" ry="4"/><ellipse cx="180" cy="50" rx="6" ry="4"/><ellipse cx="210" cy="45" rx="6" ry="4"/><ellipse cx="265" cy="55" rx="6" ry="4"/><ellipse cx="310" cy="65" rx="6" ry="4"/><ellipse cx="65" cy="140" rx="6" ry="4"/><ellipse cx="95" cy="130" rx="6" ry="4"/><ellipse cx="150" cy="135" rx="6" ry="4"/><ellipse cx="180" cy="125" rx="6" ry="4"/><ellipse cx="210" cy="135" rx="6" ry="4"/><ellipse cx="265" cy="145" rx="6" ry="4"/><ellipse cx="310" cy="135" rx="6" ry="4"/></g><g stroke="currentColor" stroke-width="1.5"><path d="M70 65V36L100 26V55M155 60V31L185 21V50M215 45V17M270 55V27M315 65V37M70 140V111L100 101V130M155 135V106L185 96V125M215 135V107M270 145V117M315 135V107"/></g><text x="19" y="66" fill="currentColor" font-family="serif" font-size="32">𝄞</text><text x="19" y="149" fill="currentColor" font-family="serif" font-size="32">𝄢</text></svg>
+              <div class="paper-footer"><span>PERFORM AT YOUR OWN PACE</span><span>01</span></div>
+            </div>
+            <span class="art-caption">a score, a sound, a moment.</span>
+          </div>
+        </section>
 
-          <ul v-if="result.meta.warnings.length" class="warnings">
-            <li v-for="warning in result.meta.warnings" :key="warning">{{ warning }}</li>
-          </ul>
+        <section class="library-section" aria-labelledby="library-title">
+          <div class="library-toolbar"><h2 id="library-title">乐谱收藏 <span>{{ catalogEntries.length.toString().padStart(2, '0') }}</span></h2><div class="library-tools">
+            <label class="search-field"><span aria-hidden="true">⌕</span><input v-model="search" type="search" placeholder="搜索曲名" aria-label="搜索曲名" data-testid="catalog-search"></label>
+            <select v-model="sort" aria-label="曲目排序"><option value="recent">最近导入</option><option value="title">曲名排序</option></select>
+          </div></div>
+          <div v-if="catalogError" class="catalog-feedback" role="alert"><h3>暂时无法加载曲库</h3><p>{{ catalogError }}</p><button class="button secondary" @click="refreshCatalog">重新加载</button></div>
+          <div v-else-if="!catalogLoading && !catalogEntries.length" class="first-score"><span class="empty-symbol" aria-hidden="true">♫</span><div><h3>第一首，就从你喜欢的开始。</h3><p>导入的乐谱会自动保存在这里，随时回来聆听。</p></div><button class="text-button" @click="openRecognizeDialog">导入第一首乐谱 ↗</button></div>
+          <div v-else-if="!catalogLoading && !visibleEntries.length" class="catalog-feedback"><h3>没有找到「{{ search }}」</h3><button class="text-button" @click="search = ''">清除搜索</button></div>
+          <CatalogList v-else :entries="visibleEntries" :loading="catalogLoading" :active-id="activeCatalogId" :editing-id="editingCatalogId" :editing-title="editingCatalogTitle"
+            @select="openEntry($event)" @play="openEntry($event, true)" @delete="errorMessage = ''; pendingDelete = catalogEntries.find(entry => entry.id === $event) ?? null" @start-rename="onStartRename" @update-editing-title="editingCatalogTitle = $event" @commit-rename="onCommitRename" @cancel-rename="onCancelRename" />
+          <div v-if="catalogEntries.length" class="library-footer"><span>共 {{ catalogEntries.length }} 首 · 已识别乐谱自动保存</span><details class="library-manage"><summary>管理曲库</summary><button class="text-button danger" data-testid="catalog-reset" :disabled="catalogLoading || resetLoading || entryLoading" @click="errorMessage = ''; confirmResetOpen = true">清空所有曲目</button></details></div>
+        </section>
+      </template>
 
-          <ResultTable :notes="result.notes" />
-        </template>
+      <template v-else-if="result">
+        <div class="studio-breadcrumb"><button class="text-button" @click="view = 'library'">← 返回曲库</button><button class="text-button" data-testid="open-recognize-dialog" @click="openRecognizeDialog">＋ 导入另一首</button></div>
+        <section class="studio-heading"><p class="eyebrow">THE LISTENING ROOM</p><h1>{{ activeTitle }}</h1><div class="score-facts"><span>{{ result.tempo }} <small>BPM</small></span><i></i><span>{{ result.timeSignature }} <small>拍</small></span><i></i><span>{{ formatTime(duration) }} <small>时长</small></span></div></section>
+        <section class="listening-surface" aria-label="曲目试听">
+          <div class="preview-header"><div><p class="eyebrow">MELODY AT A GLANCE</p><h2>看见旋律的起伏</h2></div><span class="voice-key"><i></i>右手 <i></i>左手</span></div>
+          <div class="practice-controls"><PlaybackModeGroup v-model="playbackMode" /><button class="settings-toggle" data-testid="settings-toggle" :aria-expanded="settingsOpen" aria-controls="sound-settings" @click="settingsOpen = !settingsOpen">音色设置 <span aria-hidden="true">{{ settingsOpen ? '−' : '＋' }}</span></button></div>
+          <div v-if="settingsOpen" id="sound-settings" class="sound-settings">
+            <InstrumentListbox test-id-prefix="melody-instrument" label="右手 · 主旋律" :model-value="melodyInstrument" :options="instrumentOptions" :disabled="instrumentSaving" @update:model-value="onInstrumentChange('melody', $event)" />
+            <InstrumentListbox test-id-prefix="left-instrument" label="左手 · 伴奏" :model-value="leftHandInstrument" :options="instrumentOptions" :disabled="instrumentSaving" @update:model-value="onInstrumentChange('left', $event)" />
+            <p>{{ instrumentSaving ? '正在保存音色…' : '音色会为这首曲目保存，下次播放时生效。' }}</p>
+          </div>
+          <ScorePreview :events="resolvedPlaybackEvents" :duration-beats="result.durationBeats" :beat="elapsed * result.tempo / 60" :mode="playbackMode" />
+        </section>
+        <p class="practice-hint">{{ isPlaying ? '正在聆听。切换声部会停止播放；音色更改在下次播放时生效。' : '点击下方播放开始聆听，或选择一个声部单独练习。' }}</p>
+        <div v-if="!canPlay && !entryLoading && !loading" class="notice" role="status">这份乐谱没有可播放的音符。可以查看识别详情，或换一张更清晰的谱面重新导入。</div>
+        <p v-if="result.meta.rhythmIssues?.length" class="notice" role="status">部分小节的节奏或拍号未能可靠识别，请对照原谱核对。可在识别详情中查看位置，或重新导入更清晰的谱面。</p>
+        <details class="recognition-details" data-testid="recognition-details"><summary>识别详情 <span>{{ result.meta.warnings.length ? `${result.meta.warnings.length} 条识别提示` : '查看音符与识别信息' }}</span></summary><div class="diagnostics"><p class="diagnostic-meta">音符数 {{ result.notes.length }} · 播放事件 {{ resolvedPlaybackEvents.length }} · 引擎 {{ result.meta.engine }}</p><ul v-if="result.meta.warnings.length" class="warnings"><li v-for="warning in result.meta.warnings" :key="warning">{{ warning }}</li></ul><ResultTable :notes="result.notes" /></div></details>
+      </template>
+      <footer class="page-footer"><span>MUSIC IT / 乐谱与声音之间</span><span>Take a moment. Make some music.</span></footer>
+    </main>
 
-        <p v-else class="empty">上传并识别后，这里会显示结构化音符明细。</p>
-      </aside>
+    <section v-if="result" class="player-dock" :class="{ 'is-playing': isPlaying }" aria-label="播放器">
+      <div v-if="autoPlayMessage" class="playback-notice" role="status">{{ autoPlayMessage }}</div>
+      <div class="dock-inner">
+        <button class="dock-track" title="查看当前乐谱" @click="view = 'studio'">
+          <span class="track-symbol" aria-hidden="true"><svg viewBox="0 0 40 40" fill="none"><path d="M8 12h24M8 17h24M8 22h24M8 27h24" stroke="currentColor" opacity=".2"/><path d="M24 24V10l-10 3v14M14 17l10-3" stroke="currentColor" stroke-width="1.6"/><ellipse cx="11" cy="27" rx="3.5" ry="2.5" fill="currentColor"/><ellipse cx="21" cy="24" rx="3.5" ry="2.5" fill="currentColor"/></svg></span>
+          <span class="track-copy"><strong>{{ activeTitle }}</strong><small><i class="playback-dot" aria-hidden="true"></i>{{ isPlaying ? '正在播放' : playbackLoading ? '正在准备音色…' : '准备聆听' }}</small></span>
+        </button>
+        <div class="dock-playback">
+          <div class="transport">
+            <span class="transport-caption">{{ isPlaying ? '聆听此刻' : '让旋律响起' }}</span>
+            <button v-if="!isPlaying" data-testid="main-play" class="play-button" :disabled="!canPlay || playbackLoading" :aria-label="playbackLoading ? '正在准备音色' : '播放'" :title="playbackLoading ? '正在准备音色' : '播放'" @click="onPlay"><span v-if="playbackLoading" class="loading-ring" aria-hidden="true"></span><svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5.5v13l10-6.5Z" fill="currentColor"/></svg></button>
+            <button v-else class="play-button" data-testid="main-stop" aria-label="停止" title="停止播放" @click="onStop"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></svg></button>
+            <button v-if="playbackLoading" class="transport-caption cancel-playback" @click="onStop">取消</button><span v-else class="transport-caption">{{ isPlaying ? '停止播放' : '点击播放' }}</span>
+          </div>
+          <div class="track-progress"><span>{{ formatTime(elapsed) }}</span><input class="seek-slider" type="range" min="0" :max="duration" step="0.1" :value="elapsed" :disabled="!isPlaying || playbackLoading || !duration" :style="{ '--progress': `${progress}%` }" aria-label="播放进度" :aria-valuetext="`${formatTime(elapsed)} / ${formatTime(duration)}`" @input="onSeek" /><span>{{ formatTime(duration) }}</span></div>
+        </div>
+        <div class="dock-details"><span class="dock-mode">{{ playbackMode === 'both' ? '双手合奏' : playbackMode === 'left' ? '左手练习' : '右手练习' }}</span><span class="dock-tempo">{{ result.tempo }} <small>BPM</small><i aria-hidden="true">·</i>{{ result.timeSignature }}</span></div>
+      </div>
     </section>
-
-    <RecognizeDialog
-      v-if="recognizeDialogOpen"
-      v-model:open="recognizeDialogOpen"
-      v-model:files="selectedFiles"
-      :loading="loading"
-      :error-message="errorMessage"
-      :status-message="recognizeStatus"
-      @submit="onRecognize"
-    />
-
-    <ConfirmDialog
-      v-model:open="confirmResetOpen"
-      title="确认清空目录"
-      description="将删除所有已识别曲目与缓存文件，该操作不可恢复。"
-      :loading="resetLoading"
-      confirm-text="确认清空"
-      @confirm="onConfirmResetCatalog"
-    />
-  </main>
+    <RecognizeDialog v-if="recognizeDialogOpen" v-model:open="recognizeDialogOpen" v-model:files="selectedFiles" :loading="loading" :error-message="recognizeError" :upload-progress="uploadProgress" :status-message="loading ? importStatus : ''" @submit="onRecognize" />
+    <ConfirmDialog v-model:open="confirmResetOpen" title="清空整个曲库？" :error-message="errorMessage" description="所有已识别的曲目与缓存文件都会被删除，此操作无法撤销。" :loading="resetLoading" confirm-text="清空曲库" @confirm="onConfirmResetCatalog" />
+    <ConfirmDialog v-model:open="confirmDeleteOpen" title="删除这首乐谱？" :error-message="errorMessage" :description="`「${pendingDelete?.title ?? ''}」及其识别结果会被删除，此操作无法撤销。`" :loading="deleteLoading" confirm-text="删除乐谱" @confirm="onConfirmDelete" />
+  </div>
 </template>
-
-<style scoped>
-:global(*) {
-  box-sizing: border-box;
-}
-
-:global(body) {
-  margin: 0;
-  font-family: 'Noto Sans SC', 'PingFang SC', sans-serif;
-  color: #17143f;
-}
-
-.screen {
-  --stage-bg: #f7f4ff;
-  --panel-bg: #ffffff;
-  --panel-border: #8d86cf;
-  --primary-ink: #1e1a57;
-  --sub-ink: #605a98;
-  --accent: linear-gradient(130deg, #29237f, #de429f);
-  --accent-soft: #ece7ff;
-
-  min-height: 100vh;
-  padding: 22px;
-  background:
-    radial-gradient(circle at 14% 16%, rgba(47, 185, 255, 0.18), transparent 30%),
-    radial-gradient(circle at 83% 9%, rgba(247, 95, 192, 0.18), transparent 34%),
-    linear-gradient(165deg, #f8f6ff, #f3f1ff 52%, #eff4ff);
-  display: grid;
-  gap: 18px;
-}
-
-.hero {
-  border: 1px solid var(--panel-border);
-  border-radius: 22px;
-  padding: 18px 20px;
-  background: rgba(255, 255, 255, 0.88);
-  box-shadow: 0 16px 30px rgba(45, 34, 127, 0.14);
-  animation: appear 440ms ease-out;
-  display: grid;
-  gap: 8px;
-
-  .kicker {
-    margin: 0;
-    color: #726ab0;
-    letter-spacing: 0.14em;
-    font-size: 12px;
-    font-weight: 700;
-    text-transform: uppercase;
-  }
-
-  h1 {
-    margin: 0;
-    color: var(--primary-ink);
-    font: 700 38px/1.06 'Noto Serif SC', serif;
-  }
-
-  .description {
-    margin: 0;
-    color: var(--sub-ink);
-    max-width: 720px;
-  }
-
-  .open-dialog {
-    justify-self: start;
-    border: 0;
-    border-radius: 12px;
-    padding: 11px 16px;
-    background: var(--accent);
-    color: #fff;
-    cursor: pointer;
-    font-weight: 700;
-    transition: transform 0.2s ease;
-
-    &:hover {
-      transform: translateY(-1px);
-    }
-  }
-}
-
-.layout {
-  display: grid;
-  grid-template-columns: minmax(240px, 300px) minmax(360px, 1fr) minmax(300px, 420px);
-  gap: 14px;
-  align-items: start;
-}
-
-.catalog-sidebar,
-.primary,
-.details {
-  border: 1px solid var(--panel-border);
-  border-radius: 20px;
-  background: var(--panel-bg);
-  box-shadow: 0 16px 30px rgba(45, 34, 127, 0.12);
-}
-
-.catalog-sidebar {
-  padding: 12px;
-  display: grid;
-  gap: 12px;
-
-  .sidebar-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 10px;
-
-    h2 {
-      margin: 0;
-      color: var(--primary-ink);
-      font: 700 23px/1.15 'Noto Serif SC', serif;
-    }
-
-    .toggle {
-      border: 1px solid #8b83cd;
-      border-radius: 999px;
-      padding: 7px 12px;
-      background: var(--accent-soft);
-      color: #322c6e;
-      cursor: pointer;
-      font-weight: 600;
-    }
-  }
-
-  .sidebar-panel {
-    display: grid;
-    gap: 12px;
-  }
-
-  .reset-catalog {
-    border: 0;
-    border-radius: 10px;
-    padding: 10px;
-    background: #ffe8f4;
-    color: #8f205d;
-    cursor: pointer;
-    font-weight: 700;
-
-    &:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
-  }
-}
-
-.primary {
-  padding: 16px;
-  display: grid;
-  gap: 14px;
-
-  .current {
-    border: 1px solid #8f87d2;
-    border-radius: 16px;
-    background: linear-gradient(135deg, #2d277f, #df46a2);
-    color: #fff;
-    padding: 14px;
-    display: grid;
-    gap: 6px;
-
-    .label {
-      margin: 0;
-      font-size: 12px;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      color: #e7ddff;
-    }
-
-    h2 {
-      margin: 0;
-      font: 700 28px/1.15 'Noto Serif SC', serif;
-      word-break: break-word;
-    }
-
-    .status {
-      margin: 0;
-      color: #f2edff;
-      font-weight: 500;
-    }
-  }
-
-  .instrument-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
-  }
-
-  .player-actions {
-    display: flex;
-    gap: 10px;
-
-    button {
-      border: 0;
-      border-radius: 12px;
-      padding: 11px 16px;
-      cursor: pointer;
-      font-weight: 700;
-      transition: transform 0.2s ease, opacity 0.2s ease;
-
-      &:hover:not(:disabled) {
-        transform: translateY(-1px);
-      }
-
-      &:disabled {
-        opacity: 0.55;
-        cursor: not-allowed;
-      }
-    }
-
-    .play {
-      background: var(--accent);
-      color: #fff;
-      flex: 1;
-    }
-
-    .stop {
-      background: #ede9ff;
-      color: #2b256f;
-    }
-  }
-
-  .hint {
-    margin: 0;
-    color: #5e5898;
-    font-size: 14px;
-  }
-
-  .error {
-    margin: 0;
-    color: #8f1f5f;
-    font-weight: 700;
-  }
-}
-
-.details {
-  padding: 16px;
-  display: grid;
-  gap: 12px;
-
-  h2 {
-    margin: 0;
-    color: var(--primary-ink);
-    font: 700 24px/1.15 'Noto Serif SC', serif;
-  }
-
-  .meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-
-    p {
-      margin: 0;
-      border-radius: 999px;
-      border: 1px solid #8f88d0;
-      background: #f4f0ff;
-      color: #2f2873;
-      padding: 6px 10px;
-      font-size: 12px;
-      font-weight: 700;
-    }
-  }
-
-  .warnings {
-    margin: 0;
-    padding-left: 18px;
-    color: #6e2353;
-    display: grid;
-    gap: 4px;
-  }
-
-  .empty {
-    margin: 0;
-    color: var(--sub-ink);
-  }
-}
-
-@keyframes appear {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@media (max-width: 1180px) {
-  .layout {
-    grid-template-columns: minmax(230px, 280px) minmax(0, 1fr);
-  }
-
-  .details {
-    grid-column: span 2;
-  }
-}
-
-@media (max-width: 768px) {
-  .screen {
-    padding: 14px;
-  }
-
-  .hero {
-    h1 {
-      font-size: 30px;
-    }
-  }
-
-  .layout {
-    grid-template-columns: 1fr;
-  }
-
-  .details {
-    grid-column: auto;
-  }
-
-  .primary {
-    .instrument-grid {
-      grid-template-columns: 1fr;
-    }
-  }
-}
-</style>
